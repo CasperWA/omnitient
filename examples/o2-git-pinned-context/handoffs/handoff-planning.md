@@ -8,7 +8,7 @@
 
 - Target stage: planning
 - Package stage: draft
-- Revision (content digest): `3677606c2ef9a40c571c79681a2b8b5a77fc25c6154ce16f9da6cb4f36b5a414`
+- Revision (content digest): `4822a765848758763c25070e5bd504128ac9f7f48879c899c9974eef094d8a35`
 - Approval: not required for a planning handoff
 
 ### Blockers
@@ -119,11 +119,11 @@ Approval records are workflow provenance (who recorded approval of which revisio
 ### Context `contract`
 
 - File: `omnitient:docs/o1-contract.md`
-- Expected SHA-256: `4deb45fb58c2956dac3e98092c1949918b03c947d12ffd303ed39df3f2eb18f0`
+- Expected SHA-256: `911d203f95dbb374beb483469408f95f24a943cbe8113c05517258b32bb72bd5`
 - Required: yes; mode: embed
 - Purpose: The O1 contract this slice extends: section 3.1 defines git provenance and section 6 context resolution.
 - Git provenance (supplied, not verified): revision `f888583e83f7d0e472db080713afb991af3f74be`, repository `omnitient`
-- Status: embedded; digest verified; 22401 bytes.
+- Status: embedded; digest verified; 23793 bytes.
 
 ````text
 # Omnitient O1 contract and acceptance plan
@@ -416,16 +416,18 @@ Every item is an offline pytest test; none reads production state, credentials o
 
 | Acceptance criterion | Tests |
 | --- | --- |
-| A valid package generates a useful self-contained handoff without a model | `test_render.py::test_ready_handoff_*`, `test_cli.py::test_render_*` |
-| Blocking decisions prevent ready-stage output | `test_readiness.py::test_unresolved_*`, `test_cli.py::test_render_blocked_*` |
-| Digest drift and missing context are diagnosed | `test_context.py`, `test_readiness.py::test_context_*` |
-| Changing approved content invalidates its approval reference | `test_approval.py::test_*_stale*` |
-| Equivalent content under different host mappings is portable | `test_render.py::test_host_mapping_does_not_change_handoff` |
-| Evidence can be added without rewriting history | `test_evidence.py` |
-| Malformed input, unsafe paths, overwrites and output limits behave predictably | `test_schema.py`, `test_context.py`, `test_store.py`, `test_render.py::test_output_limit_*`, `test_cli.py` |
-| Context Markdown cannot impersonate control sections | `test_render.py::test_context_cannot_forge_*` |
-| Installed console script and packaged data work outside the source cwd | `test_packaging.py` (marker `packaging`) |
-| No production state, credentials or external services are contacted | the suite runs offline in temporary directories; `test_packaging.py` builds with `--no-build-isolation --no-index` |
+| A valid package generates a useful self-contained handoff without a model | `test_render.py::test_ready_handoff_is_useful_and_self_contained`, `test_cli.py::test_full_workflow_from_scaffold_to_ready_handoff` |
+| Blocking decisions prevent ready-stage output | `test_readiness.py::test_unresolved_decision_blocks_stage_it_is_needed_by`, `test_render.py::test_blocking_decision_is_prominent_and_not_ready`, `test_cli.py::test_blocked_implementation_writes_nothing`, `test_cli.py::test_blocked_planning_handoff_is_generated_but_exits_3` |
+| Digest drift and missing context are diagnosed | `test_context.py::test_digest_drift_is_diagnosed_and_content_withheld`, `test_context.py::test_missing_file`, `test_readiness.py::test_required_context_problems_block_optional_ones_warn`, `test_render.py::test_digest_drift_withholds_content_and_says_so` |
+| Changing approved content invalidates its approval reference | `test_approval.py::test_changing_covered_content_makes_the_approval_stale`, `test_approval.py::test_changing_uncovered_content_keeps_the_approval_current` |
+| Equivalent content under different host mappings is portable | `test_render.py::test_host_mapping_does_not_change_handoff`, `test_render.py::test_output_is_reproducible` |
+| Evidence can be added without rewriting history | `test_evidence.py`, `test_render.py::test_evidence_changes_only_the_evidence_section`, `test_cli.py::test_full_workflow_from_scaffold_to_ready_handoff` |
+| Malformed input, unsafe paths, overwrites and output limits behave predictably | `test_schema.py`, `test_context.py` (symlinks, forbidden files, size limits, host mapping), `test_store.py`, `test_render.py::test_output_limit_refuses_instead_of_truncating`, `test_cli.py::test_render_never_overwrites_without_force` |
+| Context Markdown cannot impersonate control sections | `test_render.py::test_context_cannot_forge_control_sections`, `test_render.py::test_package_text_cannot_forge_control_sections`, `test_render.py::test_fence_is_longer_than_any_backtick_run` |
+| The installed console script and packaged data work outside the source cwd | `test_packaging.py` (marker `packaging`) |
+| No production state, credentials or external services are contacted | An autouse fixture in `conftest.py` makes any socket connection fail the test; tests use temporary directories and a temporary `HOME`; `test_packaging.py` builds with `--no-build-isolation --no-index`; `test_cli.py::test_cli_touches_nothing_but_its_targets` |
+| Read commands do not mutate packages | `test_cli.py::test_read_commands_do_not_mutate` (runs against a read-only directory) |
+| The committed example is a draft, unapproved and reproducible | `test_example.py` |
 
 ## 14. Supported Python
 
@@ -435,11 +437,11 @@ Every item is an offline pytest test; none reads production state, credentials o
 ### Context `context-module`
 
 - File: `omnitient:src/omnitient/context.py`
-- Expected SHA-256: `b07e721ca077c15977af14574c98ea3fcf5235a2553e3ea66ed562337ef5e273`
+- Expected SHA-256: `f3a49f60b5e315fc79b3206087a736cdc8f7df1ce91570fc4f33c97b5def19fa`
 - Required: yes; mode: embed
 - Purpose: Where context resolution lives; verification of a pinned revision would hook in here.
 - Git provenance (supplied, not verified): revision `e4fc1d182857d5a4069f4cab2f993f92fb6a2eff`, repository `omnitient`
-- Status: embedded; digest verified; 8724 bytes.
+- Status: embedded; digest verified; 8728 bytes.
 
 ````text
 """Host mapping and safe, bounded resolution of explicitly listed context files."""
@@ -517,7 +519,7 @@ def build_host_mapping(
 
     resolved: dict[str, Path] = {}
     for name, directory in entries:
-        if not rules.SLUG.match(name):
+        if not rules.SLUG.fullmatch(name):
             raise refusal("roots.invalid", f"root name {name!r} is not a valid slug")
         if name in resolved:
             raise refusal("roots.duplicate", f"root {name!r} is mapped more than once")
@@ -836,7 +838,7 @@ def evaluate_all(
 ## 11. Provenance
 
 - Package: `omnitient/provenance/o2-git-pinned-context`
-- Revision: `3677606c2ef9a40c571c79681a2b8b5a77fc25c6154ce16f9da6cb4f36b5a414`
+- Revision: `4822a765848758763c25070e5bd504128ac9f7f48879c899c9974eef094d8a35`
 - Package schema: `omnitient/work-package` version 1
 - Handoff schema: `omnitient/handoff` version 1
 - This document contains no generation time and no host paths; identical inputs give identical output.

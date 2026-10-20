@@ -249,3 +249,36 @@ def test_packaged_json_schema_matches_the_model(package: WorkPackage) -> None:
         allowed = set(schema["properties"][key]["items"]["properties"])
         used = {k for item in stored[key] for k in item}
         assert used <= allowed, key
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("project", "demo\n"),
+        ("initiative", "init\n"),
+        ("work_package", "wp1\n"),
+    ],
+)
+def test_identifiers_with_a_trailing_newline_are_rejected(
+    package: WorkPackage, key: str, value: str
+) -> None:
+    data = to_dict(package)
+    data[key] = value
+    assert parse_dict(data)[0] is None
+
+
+@pytest.mark.parametrize(
+    ("path", "value"),
+    [
+        (("context", 0, "id"), "spec\n"),
+        (("context", 0, "sha256"), "a" * 64 + "\n"),
+        (("decisions", 0, "id"), "D1\n"),
+        (("dependencies", 0, "package"), "demo/init/wp0\n"),
+    ],
+)
+def test_nested_identifiers_with_a_trailing_newline_are_rejected(
+    package: WorkPackage, path: tuple[str, int, str], value: str
+) -> None:
+    data = to_dict(package)
+    data[path[0]][path[1]][path[2]] = value
+    assert parse_dict(data)[0] is None

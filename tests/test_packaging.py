@@ -119,6 +119,11 @@ def test_console_script_and_packaged_data_work_outside_the_source_tree(
     assert Path(imported.stdout.strip()).is_relative_to(venv)
 
     assert run([script, "--version"], cwd=elsewhere).stdout.startswith("omnitient ")
+    as_module = run(
+        [venv / "bin" / "python", "-I", "-m", "omnitient", "--version"], cwd=elsewhere
+    )
+    assert as_module.returncode == 0, as_module.stderr
+    assert as_module.stdout.startswith("omnitient ")
     schema = run([script, "schema"], cwd=elsewhere)
     assert schema.returncode == 0, schema.stderr
     assert json.loads(schema.stdout)["$defs"]["slug"]

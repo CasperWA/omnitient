@@ -63,7 +63,7 @@ def text_problem(value: str, *, multiline: bool) -> str | None:
 
 
 def is_timestamp(value: str) -> bool:
-    if not TIMESTAMP.match(value):
+    if not TIMESTAMP.fullmatch(value):
         return False
     try:
         datetime.strptime(value, TIMESTAMP_FORMAT)

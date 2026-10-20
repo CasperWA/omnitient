@@ -73,7 +73,7 @@ def build_host_mapping(
 
     resolved: dict[str, Path] = {}
     for name, directory in entries:
-        if not rules.SLUG.match(name):
+        if not rules.SLUG.fullmatch(name):
             raise refusal("roots.invalid", f"root name {name!r} is not a valid slug")
         if name in resolved:
             raise refusal("roots.duplicate", f"root {name!r} is mapped more than once")

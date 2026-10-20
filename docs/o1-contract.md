@@ -288,16 +288,18 @@ Every item is an offline pytest test; none reads production state, credentials o
 
 | Acceptance criterion | Tests |
 | --- | --- |
-| A valid package generates a useful self-contained handoff without a model | `test_render.py::test_ready_handoff_*`, `test_cli.py::test_render_*` |
-| Blocking decisions prevent ready-stage output | `test_readiness.py::test_unresolved_*`, `test_cli.py::test_render_blocked_*` |
-| Digest drift and missing context are diagnosed | `test_context.py`, `test_readiness.py::test_context_*` |
-| Changing approved content invalidates its approval reference | `test_approval.py::test_*_stale*` |
-| Equivalent content under different host mappings is portable | `test_render.py::test_host_mapping_does_not_change_handoff` |
-| Evidence can be added without rewriting history | `test_evidence.py` |
-| Malformed input, unsafe paths, overwrites and output limits behave predictably | `test_schema.py`, `test_context.py`, `test_store.py`, `test_render.py::test_output_limit_*`, `test_cli.py` |
-| Context Markdown cannot impersonate control sections | `test_render.py::test_context_cannot_forge_*` |
-| Installed console script and packaged data work outside the source cwd | `test_packaging.py` (marker `packaging`) |
-| No production state, credentials or external services are contacted | the suite runs offline in temporary directories; `test_packaging.py` builds with `--no-build-isolation --no-index` |
+| A valid package generates a useful self-contained handoff without a model | `test_render.py::test_ready_handoff_is_useful_and_self_contained`, `test_cli.py::test_full_workflow_from_scaffold_to_ready_handoff` |
+| Blocking decisions prevent ready-stage output | `test_readiness.py::test_unresolved_decision_blocks_stage_it_is_needed_by`, `test_render.py::test_blocking_decision_is_prominent_and_not_ready`, `test_cli.py::test_blocked_implementation_writes_nothing`, `test_cli.py::test_blocked_planning_handoff_is_generated_but_exits_3` |
+| Digest drift and missing context are diagnosed | `test_context.py::test_digest_drift_is_diagnosed_and_content_withheld`, `test_context.py::test_missing_file`, `test_readiness.py::test_required_context_problems_block_optional_ones_warn`, `test_render.py::test_digest_drift_withholds_content_and_says_so` |
+| Changing approved content invalidates its approval reference | `test_approval.py::test_changing_covered_content_makes_the_approval_stale`, `test_approval.py::test_changing_uncovered_content_keeps_the_approval_current` |
+| Equivalent content under different host mappings is portable | `test_render.py::test_host_mapping_does_not_change_handoff`, `test_render.py::test_output_is_reproducible` |
+| Evidence can be added without rewriting history | `test_evidence.py`, `test_render.py::test_evidence_changes_only_the_evidence_section`, `test_cli.py::test_full_workflow_from_scaffold_to_ready_handoff` |
+| Malformed input, unsafe paths, overwrites and output limits behave predictably | `test_schema.py`, `test_context.py` (symlinks, forbidden files, size limits, host mapping), `test_store.py`, `test_render.py::test_output_limit_refuses_instead_of_truncating`, `test_cli.py::test_render_never_overwrites_without_force` |
+| Context Markdown cannot impersonate control sections | `test_render.py::test_context_cannot_forge_control_sections`, `test_render.py::test_package_text_cannot_forge_control_sections`, `test_render.py::test_fence_is_longer_than_any_backtick_run` |
+| The installed console script and packaged data work outside the source cwd | `test_packaging.py` (marker `packaging`) |
+| No production state, credentials or external services are contacted | An autouse fixture in `conftest.py` makes any socket connection fail the test; tests use temporary directories and a temporary `HOME`; `test_packaging.py` builds with `--no-build-isolation --no-index`; `test_cli.py::test_cli_touches_nothing_but_its_targets` |
+| Read commands do not mutate packages | `test_cli.py::test_read_commands_do_not_mutate` (runs against a read-only directory) |
+| The committed example is a draft, unapproved and reproducible | `test_example.py` |
 
 ## 14. Supported Python
 

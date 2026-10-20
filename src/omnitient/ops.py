@@ -83,7 +83,9 @@ def add_approval(
         note=note,
     )
     new_stage = stage if stage_rank(pkg.stage) < stage_rank(stage) else pkg.stage
-    return replace(pkg, stage=new_stage, approvals=(*pkg.approvals, approval))
+    new = replace(pkg, stage=new_stage, approvals=(*pkg.approvals, approval))
+    assert_history_preserved(pkg, new)
+    return new
 
 
 def add_evidence(

@@ -127,7 +127,7 @@ class _Reader:
         value = self.raw(key, required)
         if value is _MISSING:
             return None
-        if not isinstance(value, str) or not regex.match(value):
+        if not isinstance(value, str) or not regex.fullmatch(value):
             self.error(key, f"must be {description}")
             return None
         return value
@@ -416,7 +416,7 @@ def _check_evidence_ref(
         diags.append(Diagnostic("schema.invalid", "error", message, f"{location}.ref"))
 
     if item.kind == "commit":
-        if not rules.GIT_REVISION.match(item.ref):
+        if not rules.GIT_REVISION.fullmatch(item.ref):
             bad("must be 7-64 lowercase hex characters for kind 'commit'")
     elif item.kind == "pr":
         if problem := rules.url_problem(item.ref):

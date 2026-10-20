@@ -43,7 +43,7 @@
       "id": "contract",
       "root": "omnitient",
       "path": "docs/o1-contract.md",
-      "sha256": "4deb45fb58c2956dac3e98092c1949918b03c947d12ffd303ed39df3f2eb18f0",
+      "sha256": "911d203f95dbb374beb483469408f95f24a943cbe8113c05517258b32bb72bd5",
       "required": true,
       "mode": "embed",
       "purpose": "The O1 contract this slice extends: section 3.1 defines git provenance and section 6 context resolution.",
@@ -56,7 +56,7 @@
       "id": "context-module",
       "root": "omnitient",
       "path": "src/omnitient/context.py",
-      "sha256": "b07e721ca077c15977af14574c98ea3fcf5235a2553e3ea66ed562337ef5e273",
+      "sha256": "f3a49f60b5e315fc79b3206087a736cdc8f7df1ce91570fc4f33c97b5def19fa",
       "required": true,
       "mode": "embed",
       "purpose": "Where context resolution lives; verification of a pinned revision would hook in here.",
@@ -107,6 +107,7 @@
     {
       "id": "D4",
       "question": "Should verification also apply to `reference` mode context, or only to embedded files?",
+      "rationale": "",
       "status": "unresolved",
       "source": "O1 implementation session (draft, not reviewed by a human)",
       "needed_by": "implementation"
