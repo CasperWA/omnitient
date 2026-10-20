@@ -1,0 +1,150 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://omnitient.invalid/schema/work-package/1",
+  "title": "Omnitient work package, schema version 1",
+  "description": "Editor aid. The validator in omnitient.schema is authoritative; it also enforces uniqueness, cross-references and text rules that this file cannot express.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "schema_version", "project", "initiative", "work_package", "title", "stage", "objective"],
+  "properties": {
+    "schema": {"const": "omnitient/work-package"},
+    "schema_version": {"const": 1},
+    "project": {"$ref": "#/$defs/slug"},
+    "initiative": {"$ref": "#/$defs/slug"},
+    "work_package": {"$ref": "#/$defs/slug"},
+    "title": {"$ref": "#/$defs/line200"},
+    "stage": {"enum": ["draft", "planning", "implementation", "review", "done"]},
+    "objective": {"type": "string", "minLength": 1, "maxLength": 8000},
+    "scope": {"$ref": "#/$defs/lines"},
+    "exclusions": {"$ref": "#/$defs/lines"},
+    "acceptance": {"$ref": "#/$defs/lines"},
+    "dependencies": {
+      "type": "array", "maxItems": 100,
+      "items": {
+        "type": "object", "additionalProperties": false, "required": ["package"],
+        "properties": {
+          "package": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,62}(/[a-z0-9][a-z0-9-]{0,62}){2}$"},
+          "note": {"$ref": "#/$defs/line1000"}
+        }
+      }
+    },
+    "roots": {
+      "type": "array", "maxItems": 16,
+      "items": {
+        "type": "object", "additionalProperties": false, "required": ["name"],
+        "properties": {"name": {"$ref": "#/$defs/slug"}, "description": {"type": "string", "maxLength": 1000}}
+      }
+    },
+    "context": {
+      "type": "array", "maxItems": 64,
+      "items": {
+        "type": "object", "additionalProperties": false, "required": ["id", "root", "path", "sha256"],
+        "properties": {
+          "id": {"$ref": "#/$defs/ident"},
+          "root": {"$ref": "#/$defs/slug"},
+          "path": {"type": "string", "minLength": 1, "maxLength": 512},
+          "sha256": {"$ref": "#/$defs/sha256"},
+          "required": {"type": "boolean", "default": true},
+          "mode": {"enum": ["embed", "reference"], "default": "embed"},
+          "purpose": {"type": "string", "maxLength": 1000},
+          "git": {
+            "type": "object", "additionalProperties": false, "required": ["revision"],
+            "properties": {
+              "revision": {"type": "string", "pattern": "^[0-9a-f]{7,64}$"},
+              "repository": {"$ref": "#/$defs/line1000"},
+              "ref": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._/@+-]{0,199}$"}
+            }
+          }
+        }
+      }
+    },
+    "decisions": {
+      "type": "array", "maxItems": 200,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["id", "question", "status", "source", "needed_by"],
+        "properties": {
+          "id": {"$ref": "#/$defs/ident"},
+          "question": {"$ref": "#/$defs/line1000"},
+          "rationale": {"type": "string", "maxLength": 8000},
+          "status": {"enum": ["unresolved", "resolved"]},
+          "answer": {"type": "string", "minLength": 1, "maxLength": 8000},
+          "source": {"$ref": "#/$defs/line200"},
+          "needed_by": {"enum": ["planning", "implementation", "review"]},
+          "applies_to_revision": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._/@+-]{0,199}$"}
+        },
+        "if": {"properties": {"status": {"const": "resolved"}}, "required": ["status"]},
+        "then": {"required": ["answer"]},
+        "else": {"not": {"required": ["answer"]}}
+      }
+    },
+    "recommendations": {
+      "type": "array", "maxItems": 20,
+      "items": {
+        "type": "object", "additionalProperties": false, "required": ["id", "stage"],
+        "properties": {
+          "id": {"$ref": "#/$defs/ident"},
+          "stage": {"enum": ["planning", "implementation", "review"]},
+          "model": {"$ref": "#/$defs/line200"},
+          "effort": {"$ref": "#/$defs/line200"},
+          "account": {"$ref": "#/$defs/line200"},
+          "limits": {
+            "type": "object", "additionalProperties": false,
+            "properties": {
+              "max_turns": {"type": "integer", "minimum": 1, "maximum": 100000},
+              "max_wall_minutes": {"type": "integer", "minimum": 1, "maximum": 100000},
+              "max_cost_usd": {"type": "number", "exclusiveMinimum": 0, "maximum": 1000000}
+            }
+          },
+          "note": {"$ref": "#/$defs/line1000"}
+        }
+      }
+    },
+    "evidence": {
+      "type": "array", "maxItems": 500,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["id", "kind", "ref", "recorded_by", "recorded_at"],
+        "properties": {
+          "id": {"$ref": "#/$defs/ident"},
+          "kind": {"enum": ["report", "pr", "commit"]},
+          "ref": {"type": "string", "minLength": 1, "maxLength": 552},
+          "summary": {"$ref": "#/$defs/line1000"},
+          "recorded_by": {"$ref": "#/$defs/line200"},
+          "recorded_at": {"$ref": "#/$defs/timestamp"},
+          "engine": {
+            "type": "object", "additionalProperties": false, "required": ["run_id"],
+            "properties": {
+              "run_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"},
+              "attempt_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"}
+            }
+          }
+        }
+      }
+    },
+    "approvals": {
+      "type": "array", "maxItems": 100,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["id", "stage", "approved_by", "approved_at", "content_digest"],
+        "properties": {
+          "id": {"$ref": "#/$defs/ident"},
+          "stage": {"enum": ["planning", "implementation", "review"]},
+          "approved_by": {"$ref": "#/$defs/line200"},
+          "approved_at": {"$ref": "#/$defs/timestamp"},
+          "content_digest": {"$ref": "#/$defs/sha256"},
+          "note": {"$ref": "#/$defs/line1000"}
+        }
+      }
+    }
+  },
+  "$defs": {
+    "slug": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,62}$"},
+    "ident": {"type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,31}$"},
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "timestamp": {"type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$"},
+    "line200": {"type": "string", "minLength": 1, "maxLength": 200},
+    "line1000": {"type": "string", "minLength": 1, "maxLength": 1000},
+    "lines": {"type": "array", "maxItems": 100, "items": {"$ref": "#/$defs/line1000"}}
+  }
+}

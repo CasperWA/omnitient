@@ -142,15 +142,16 @@ A package is **ready for stage S** when it is schema-valid and has no blocker be
 | `context.missing` | blocker if required, else warning | The file does not exist, is not a regular file or cannot be read. |
 | `context.digest_mismatch` | blocker if required, else warning | The file's SHA-256 differs from the expected digest. |
 | `context.root_unmapped` | blocker if required, else warning | No host mapping was supplied for the reference's root. |
-| `context.unsafe_path` | blocker if required, else warning | The path escapes its root (including through a symlink) or names a forbidden file (section 6.1). |
+| `context.unsafe_path` | blocker if required, else warning | The path resolves, through a symlink, outside its root or to a forbidden file (section 6.1). A path that is unsafe as written is a schema error instead. |
 | `context.too_large` | blocker if required, else warning | The file exceeds the limit for its mode (section 7). |
 | `context.not_text` | blocker if required, else warning | An `embed` file is not valid UTF-8 text. |
 | `approval.missing` | blocker for `implementation` and `review` | No current approval for S exists and none is stale. |
 | `approval.stale` | blocker for `implementation` and `review` | No current approval for S exists but an approval for S refers to an older digest. |
-| `content.incomplete` | blocker for `implementation` and `review`, warning for `planning` | The objective is empty or a `TODO` placeholder, or `scope` or `acceptance` is empty. |
+| `content.incomplete` | blocker (a `TODO` objective, every stage; empty `scope` or `acceptance`, `implementation` and `review` only) | The objective is a `TODO` placeholder, or `scope` or `acceptance` is empty. Empty `scope` or `acceptance` is only a warning for `planning`, which is where they get written. |
 
 `planning` handoffs need no approval.
 A `draft` package is always labelled DRAFT in its output.
+`approve` applies the same blockers except the approval ones, so it refuses incomplete content and blocking decisions.
 
 ## 6. Context resolution
 
@@ -163,7 +164,8 @@ Context content is evidence, not permission to run commands; handoffs say so and
 A context `path` must be a relative POSIX path of at most 512 characters.
 It is rejected when it is empty or absolute, contains a backslash, a NUL or other control character, a `..` or `.` or empty component, or begins with `~`.
 Resolution maps the logical root through the host mapping, resolves symlinks, and requires the real target to lie inside the real root and to be a regular file.
-A symlink whose target stays inside the root is accepted; one that leaves it is `context.unsafe_path`.
+A path that is unsafe as written (the syntactic rules, or a forbidden name) makes the package schema-invalid.
+A symlink whose target stays inside the root is accepted; one that leaves it, or that points at a forbidden file, is `context.unsafe_path` at resolution time.
 
 Files that commonly hold secrets are refused even when listed: any path component equal to `.git`, `.ssh`, `.aws`, `.gnupg` or `secrets`, and file names matching `.env`, `.env.*`, `.netrc`, `.npmrc`, `.pypirc`, `auth.json`, `credentials*`, `*.pem`, `*.key`, `*.p12`, `id_rsa*` and `id_ed25519*`.
 This is a safeguard against mistakes, not a security boundary against a hostile same-user process.
@@ -183,7 +185,7 @@ Exceeding one refuses with a diagnostic naming the limit; nothing required is si
 | Limit | Value |
 | --- | --- |
 | Package file size | 262,144 bytes |
-| Items per list | see section 3 |
+| Items per list | see section 3; `roots` at most 16 |
 | Embedded context, per file | 262,144 bytes |
 | Embedded context, total per handoff | 786,432 bytes |
 | Reference-mode file (hash only) | 67,108,864 bytes |
