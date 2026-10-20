@@ -17,7 +17,7 @@ from omnitient.limits import (
     MAX_EMBED_TOTAL_BYTES,
     MAX_REFERENCE_FILE_BYTES,
 )
-from omnitient.model import ContextRef, WorkPackage
+from omnitient.model import ContextMode, ContextRef, WorkPackage
 
 ContextStatus = Literal[
     "ok",
@@ -131,61 +131,57 @@ def resolve_context(pkg: WorkPackage, mapping: HostMapping) -> list[ResolvedCont
     results: list[ResolvedContext] = []
     embedded_total = 0
     for ref in pkg.context:
-        budget = MAX_EMBED_TOTAL_BYTES - embedded_total
-        result = _resolve_one(ref, mapping, budget)
-        if (
-            result.status == "ok"
-            and result.text is not None
-            and result.size is not None
-        ):
+        result = _resolve_one(ref, mapping, MAX_EMBED_TOTAL_BYTES - embedded_total)
+        if result.text is not None and result.size is not None:
             embedded_total += result.size
         results.append(result)
     return results
 
 
-def _resolve_one(ref: ContextRef, mapping: HostMapping, budget: int) -> ResolvedContext:
-    def fail(status: ContextStatus, detail: str) -> ResolvedContext:
-        return ResolvedContext(ref, status, detail)
+@dataclass(frozen=True)
+class _Inspection:
+    """What reading one file yielded, before comparing with any expected digest."""
 
-    root = mapping.roots.get(ref.root)
-    if root is None:
-        return fail(
-            "root_unmapped", f"no host directory supplied for root '{ref.root}'"
-        )
-    problem = rules.relative_path_problem(ref.path) or rules.forbidden_reason(ref.path)
+    status: ContextStatus
+    detail: str = ""
+    sha256: str | None = None
+    size: int | None = None
+    text: str | None = None
+
+
+def _inspect(root: Path, relative: str, mode: ContextMode, budget: int) -> _Inspection:
+    """Locate, bound-check and read one file under ``root``; embed mode decodes it."""
+    problem = rules.relative_path_problem(relative) or rules.forbidden_reason(relative)
     if problem:
-        return fail("unsafe_path", f"path {problem}")
-
+        return _Inspection("unsafe_path", f"path {problem}")
     try:
-        target = (root / ref.path).resolve(strict=True)
+        target = (root / relative).resolve(strict=True)
     except FileNotFoundError:
-        return fail("missing", "file does not exist")
+        return _Inspection("missing", "file does not exist")
     except (OSError, RuntimeError) as exc:
-        return fail("unreadable", f"cannot resolve path: {exc}")
+        return _Inspection("unreadable", f"cannot resolve path: {exc}")
     if not target.is_relative_to(root):
-        return fail("unsafe_path", "resolves outside its root (symlink escape)")
-    relative = target.relative_to(root).as_posix()
-    if forbidden := rules.forbidden_reason(relative):
-        return fail("unsafe_path", f"resolves to a file that {forbidden}")
+        return _Inspection("unsafe_path", "resolves outside its root (symlink escape)")
+    if forbidden := rules.forbidden_reason(target.relative_to(root).as_posix()):
+        return _Inspection("unsafe_path", f"resolves to a file that {forbidden}")
 
     try:
         info = target.stat()
     except OSError as exc:
-        return fail("unreadable", f"cannot stat file: {exc.strerror}")
+        return _Inspection("unreadable", f"cannot stat file: {exc.strerror}")
     if not stat.S_ISREG(info.st_mode):
-        return fail("missing", "not a regular file")
+        return _Inspection("missing", "not a regular file")
 
-    embed = ref.mode == "embed"
-    limit = MAX_EMBED_FILE_BYTES if embed else MAX_REFERENCE_FILE_BYTES
+    embed = mode == "embed"
+    limit = min(MAX_EMBED_FILE_BYTES, budget) if embed else MAX_REFERENCE_FILE_BYTES
     if info.st_size > limit:
-        return fail(
-            "too_large", f"{info.st_size} bytes exceeds the {ref.mode} limit of {limit}"
+        what = (
+            f"the {mode} limit of {MAX_EMBED_FILE_BYTES} or the remaining "
+            f"total embed budget of {budget}"
+            if embed
+            else f"the {mode} limit of {limit}"
         )
-    if embed and info.st_size > budget:
-        return fail(
-            "too_large",
-            f"{info.st_size} bytes exceeds the remaining embed budget of {budget} (total {MAX_EMBED_TOTAL_BYTES})",
-        )
+        return _Inspection("too_large", f"{info.st_size} bytes exceeds {what}")
 
     digest = hashlib.sha256()
     chunks: list[bytes] = []
@@ -195,44 +191,59 @@ def _resolve_one(ref: ContextRef, mapping: HostMapping, budget: int) -> Resolved
             while chunk := handle.read(_CHUNK):
                 size += len(chunk)
                 if size > limit:
-                    return fail(
-                        "too_large",
-                        f"file grew beyond the {ref.mode} limit of {limit} while reading",
+                    return _Inspection(
+                        "too_large", f"file grew beyond {limit} bytes while reading"
                     )
                 digest.update(chunk)
                 if embed:
                     chunks.append(chunk)
     except OSError as exc:
-        return fail("unreadable", f"cannot read file: {exc.strerror}")
+        return _Inspection("unreadable", f"cannot read file: {exc.strerror}")
 
     actual = digest.hexdigest()
-    if actual != ref.sha256:
-        return ResolvedContext(
-            ref,
-            "digest_mismatch",
-            f"expected {ref.sha256}, found {actual}",
-            actual,
-            size,
-        )
     if not embed:
-        return ResolvedContext(ref, "ok", "", actual, size)
+        return _Inspection("ok", "", actual, size)
     data = b"".join(chunks)
     if b"\x00" in data:
-        return ResolvedContext(ref, "not_text", "contains NUL bytes", actual, size)
+        return _Inspection("not_text", "contains NUL bytes", actual, size)
     try:
         text = data.decode("utf-8")
     except UnicodeDecodeError:
-        return ResolvedContext(ref, "not_text", "is not valid UTF-8", actual, size)
-    return ResolvedContext(ref, "ok", "", actual, size, text)
+        return _Inspection("not_text", "is not valid UTF-8", actual, size)
+    return _Inspection("ok", "", actual, size, text)
 
 
-def digest_file(root: Path, relative_path: str) -> tuple[str, int]:
-    """Hash one file under ``root`` with the same safety rules as resolution.
+def _resolve_one(ref: ContextRef, mapping: HostMapping, budget: int) -> ResolvedContext:
+    root = mapping.roots.get(ref.root)
+    if root is None:
+        return ResolvedContext(
+            ref, "root_unmapped", f"no host directory supplied for root '{ref.root}'"
+        )
+    found = _inspect(root, ref.path, ref.mode, budget)
+    if found.status == "ok" and found.sha256 != ref.sha256:
+        # The content is withheld: it is not what the package approved.
+        return ResolvedContext(
+            ref,
+            "digest_mismatch",
+            f"expected {ref.sha256}, found {found.sha256}",
+            found.sha256,
+            found.size,
+        )
+    return ResolvedContext(
+        ref, found.status, found.detail, found.sha256, found.size, found.text
+    )
 
-    Used by ``context add`` and ``context pin``; raises on any problem.
+
+def digest_file(
+    root: Path, relative_path: str, mode: ContextMode = "embed"
+) -> tuple[str, int]:
+    """Hash one file under ``root`` under the same rules as resolution.
+
+    Used by ``context add`` and ``context pin``, so a reference is never created
+    or re-pinned for a file that could not be used in its mode.
+    Raises on any problem.
     """
-    stub = ContextRef("probe", "probe", relative_path, "0" * 64, mode="reference")
-    result = _resolve_one(stub, HostMapping({"probe": root}), 0)
-    if result.actual_sha256 is None or result.size is None:
-        raise refusal(f"context.{result.status}", f"{relative_path}: {result.detail}")
-    return result.actual_sha256, result.size
+    found = _inspect(root, relative_path, mode, MAX_EMBED_TOTAL_BYTES)
+    if found.status != "ok" or found.sha256 is None or found.size is None:
+        raise refusal(f"context.{found.status}", f"{relative_path}: {found.detail}")
+    return found.sha256, found.size

@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from omnitient.cli import main
+from omnitient.cli import _truncate, main
 from omnitient.model import Decision, WorkPackage
 
 Run = Callable[..., tuple[int, str, str]]
@@ -624,3 +624,38 @@ def test_cli_touches_nothing_but_its_targets(
         k: v for k, v in after.items() if k in before
     } == before  # nothing else changed
     assert not (tmp_path / "home").exists()
+
+
+def test_context_add_applies_embed_rules_and_pin_notes_git(
+    run: Run, pkg_file: Path, repo: Path
+) -> None:
+    (repo / "docs" / "blob.bin").write_bytes(b"\xff\x00")
+    roots = ("--root", f"repo={repo}")
+    code, _, err = run("context", "add", pkg_file, "repo:docs/blob.bin", *roots)
+    assert code == 1
+    assert "context.not_text" in err
+    assert (
+        run(
+            "context",
+            "add",
+            pkg_file,
+            "repo:docs/blob.bin",
+            "--mode",
+            "reference",
+            *roots,
+        )[0]
+        == 0
+    )
+    (repo / "docs" / "spec.md").write_text("changed\n", encoding="utf-8")
+    code, out, err = run(
+        "context", "pin", pkg_file, "spec", *roots
+    )  # spec carries git provenance
+    assert code == 0
+    assert "updated" in out
+    assert "git provenance is not updated" in err
+
+
+def test_truncate_marks_only_real_cuts() -> None:
+    assert _truncate("short", 20) == "short"
+    assert _truncate("one\ntwo", 20) == "one…"
+    assert _truncate("x" * 30, 10) == "x" * 9 + "…"

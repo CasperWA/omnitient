@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import stat
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -32,6 +33,8 @@ def load_package(arg: Path) -> LoadedPackage:
     """Read and validate a package; raises with all schema diagnostics."""
     path = package_path(arg)
     try:
+        if not stat.S_ISREG(path.stat().st_mode):
+            raise refusal("store.unreadable", f"{path} is not a regular file")
         with path.open("rb") as handle:
             raw = handle.read(MAX_PACKAGE_BYTES + 1)
     except OSError as exc:
@@ -76,7 +79,7 @@ def update_package(
     if result.package is None:
         raise OmnitientError(result.diagnostics)
 
-    path = loaded.path
+    path = loaded.path.resolve()  # a symlinked package is updated in place
     lock = path.with_name(path.name + ".lock")
     try:
         lock_handle = lock.open("x")

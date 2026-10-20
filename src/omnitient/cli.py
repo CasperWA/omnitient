@@ -109,10 +109,12 @@ def _readiness_lines(report: Readiness, indent: str = "  ") -> list[str]:
 
 
 def _truncate(text: str, width: int) -> str:
-    first = text.splitlines()[0] if text else ""
-    return (
-        first if len(first) <= width and "\n" not in text else first[: width - 1] + "…"
-    )
+    """First line of ``text``, marked with an ellipsis when anything was cut."""
+    lines = text.splitlines() or [""]
+    first = lines[0]
+    if len(first) > width:
+        return first[: width - 1] + "…"
+    return first + "…" if len(lines) > 1 else first
 
 
 # --- commands -----------------------------------------------------------------
@@ -392,7 +394,7 @@ def cmd_context_add(args: argparse.Namespace) -> int:
         raise refusal(
             "context.root_unmapped", f"supply --root {root}=DIRECTORY to hash the file"
         )
-    digest, size = digest_file(mapping.roots[root], path)
+    digest, size = digest_file(mapping.roots[root], path, args.mode)
     git = (
         GitProvenance(args.git_revision, args.git_repository, args.git_ref)
         if args.git_revision
@@ -431,12 +433,16 @@ def cmd_context_pin(args: argparse.Namespace) -> int:
             raise refusal(
                 "context.root_unmapped", f"supply --root {ref.root}=DIRECTORY"
             )
-        digests[ident], _ = digest_file(mapping.roots[ref.root], ref.path)
+        digests[ident], _ = digest_file(mapping.roots[ref.root], ref.path, ref.mode)
     update_package(loaded, lambda pkg: ops.pin_context(pkg, digests))
     for ident, digest in digests.items():
         changed = "unchanged" if by_id[ident].sha256 == digest else "updated"
         _out(f"{ident}: {changed} sha256={digest}")
     _err("note: pinning changes the package revision; earlier approvals are now stale")
+    if any(by_id[ident].git for ident in digests):
+        _err(
+            "note: supplied git provenance is not updated by pin; edit it by hand if needed"
+        )
     return EXIT_OK
 
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import replace
 from pathlib import Path
 
@@ -141,3 +142,23 @@ def test_write_output_does_not_follow_a_symlink_when_not_forced(tmp_path: Path) 
     with pytest.raises(OmnitientError):
         write_output(link, b"overwritten", overwrite=False)
     assert victim.read_text(encoding="utf-8") == "keep"
+
+
+def test_load_refuses_a_fifo_instead_of_blocking(tmp_path: Path) -> None:
+    fifo = tmp_path / "pipe.json"
+    os.mkfifo(fifo)
+    with pytest.raises(OmnitientError) as info:
+        load_package(fifo)
+    assert code_of(info) == "store.unreadable"
+
+
+def test_updating_through_a_symlink_edits_the_target(
+    tmp_path: Path, package: WorkPackage
+) -> None:
+    real = tmp_path / "real.json"
+    create_package(real, package)
+    link = tmp_path / "link.json"
+    link.symlink_to(real)
+    update_package(load_package(link), lambda p: replace(p, title="Via link"))
+    assert link.is_symlink()
+    assert load_package(real).package.title == "Via link"

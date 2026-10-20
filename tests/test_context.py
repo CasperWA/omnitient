@@ -239,3 +239,19 @@ class TestHostMapping:
 
     def test_mapping_never_changes_context_identity(self, package: WorkPackage) -> None:
         assert all(isinstance(c, ContextRef) for c in package.context)
+
+
+def test_symlink_loop_is_reported_not_raised(
+    package: WorkPackage, mapping: HostMapping, repo: Path
+) -> None:
+    (repo / "docs" / "loop.md").symlink_to(repo / "docs" / "loop.md")
+    assert one(with_ref(package, path="docs/loop.md"), mapping).status == "unreadable"
+
+
+def test_digest_file_applies_the_mode_rules(repo: Path) -> None:
+    (repo / "docs" / "blob.bin").write_bytes(b"\xff\x00binary")
+    with pytest.raises(OmnitientError) as info:
+        digest_file(repo.resolve(), "docs/blob.bin", "embed")
+    assert info.value.diagnostics[0].code == "context.not_text"
+    digest, size = digest_file(repo.resolve(), "docs/blob.bin", "reference")
+    assert (digest, size) == (sha(b"\xff\x00binary"), 8)
