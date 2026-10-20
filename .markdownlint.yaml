@@ -1,0 +1,19 @@
+# Default state for all rules
+default: true
+
+# MD013/line-length
+# Prose and code blocks follow a one-sentence-per-line style, so long lines are
+# expected. Headings stay short.
+MD013:
+  line_length: 999
+  heading_line_length: 88
+  code_block_line_length: 999
+
+# MD024/no-duplicate-heading
+# The same heading text may appear under different parents.
+MD024:
+  siblings_only: true
+
+# MD060/table-column-style
+# Hand-aligning table pipes is not worth the churn; tables render identically.
+MD060: false
