@@ -249,8 +249,8 @@ Console script: `omnitient` (also `python -m omnitient`).
 | `render PACKAGE --stage S [--out DIR\|-] [--format md\|json\|both] [--allow-blocked] [--force] [--root ...]` | Section 8. | writes outputs only |
 | `approve PACKAGE --stage S --by NAME [--note T] [--root ...]` | Section 4.3. | appends an approval |
 | `evidence add PACKAGE --kind K --ref R --by NAME [--summary T] [--run-id ID] [--attempt-id ID]` | Append an evidence reference. | appends evidence |
-| `context add PACKAGE ROOT:PATH --root ROOT=DIR [--id ID] [--optional] [--mode M] [--purpose T] [--git-revision REV]` | Compute the digest of an existing file and add the reference, declaring the root if needed. | adds context |
-| `context pin PACKAGE ID... --root ROOT=DIR` | Replace the expected digest of the named references with the current file digests. Explicit acceptance of drift; invalidates approvals. | edits context |
+| `context add PACKAGE ROOT:PATH --root ROOT=DIR [--id ID] [--optional] [--mode M] [--purpose T] [--git-revision REV]` | Compute the digest of an existing file under the rules of its mode (a binary or oversized file cannot be added as `embed`) and add the reference, declaring the root if needed. | adds context |
+| `context pin PACKAGE ID... --root ROOT=DIR` | Replace the expected digest of the named references with the current file digests. Explicit acceptance of drift; invalidates approvals; supplied `git` provenance is left for the author to update. | edits context |
 | `schema` | Print the packaged JSON Schema. | no |
 
 Exit codes: `0` success (and READY where readiness is evaluated); `1` refused or invalid input (schema errors, unsafe paths, limits, existing output, store conflicts); `2` command-line usage error; `3` valid input but not ready.
