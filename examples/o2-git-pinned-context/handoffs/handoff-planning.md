@@ -8,7 +8,7 @@
 
 - Target stage: planning
 - Package stage: draft
-- Revision (content digest): `4822a765848758763c25070e5bd504128ac9f7f48879c899c9974eef094d8a35`
+- Revision (content digest): `18333d746e1d13079051c05e39ff59b883effcb08d7fff084ce3afe5b6e7a37c`
 - Approval: not required for a planning handoff
 
 ### Blockers
@@ -122,7 +122,7 @@ Approval records are workflow provenance (who recorded approval of which revisio
 - Expected SHA-256: `911d203f95dbb374beb483469408f95f24a943cbe8113c05517258b32bb72bd5`
 - Required: yes; mode: embed
 - Purpose: The O1 contract this slice extends: section 3.1 defines git provenance and section 6 context resolution.
-- Git provenance (supplied, not verified): revision `f888583e83f7d0e472db080713afb991af3f74be`, repository `omnitient`
+- Git provenance (supplied, not verified): revision `518f1cace512bc766728ef958c32d3bdfeac2db7`, repository `omnitient`
 - Status: embedded; digest verified; 23793 bytes.
 
 ````text
@@ -440,7 +440,7 @@ Every item is an offline pytest test; none reads production state, credentials o
 - Expected SHA-256: `f3a49f60b5e315fc79b3206087a736cdc8f7df1ce91570fc4f33c97b5def19fa`
 - Required: yes; mode: embed
 - Purpose: Where context resolution lives; verification of a pinned revision would hook in here.
-- Git provenance (supplied, not verified): revision `e4fc1d182857d5a4069f4cab2f993f92fb6a2eff`, repository `omnitient`
+- Git provenance (supplied, not verified): revision `518f1cace512bc766728ef958c32d3bdfeac2db7`, repository `omnitient`
 - Status: embedded; digest verified; 8728 bytes.
 
 ````text
@@ -838,7 +838,7 @@ def evaluate_all(
 ## 11. Provenance
 
 - Package: `omnitient/provenance/o2-git-pinned-context`
-- Revision: `4822a765848758763c25070e5bd504128ac9f7f48879c899c9974eef094d8a35`
+- Revision: `18333d746e1d13079051c05e39ff59b883effcb08d7fff084ce3afe5b6e7a37c`
 - Package schema: `omnitient/work-package` version 1
 - Handoff schema: `omnitient/handoff` version 1
 - This document contains no generation time and no host paths; identical inputs give identical output.
