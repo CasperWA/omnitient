@@ -10,6 +10,10 @@
 default_language_version:
   python: python3.12
 
+# Generated handoffs embed arbitrary file contents verbatim and must not be
+# reformatted by the file, formatting or Markdown hooks.
+exclude: ^examples/.*/handoffs/
+
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v6.0.0

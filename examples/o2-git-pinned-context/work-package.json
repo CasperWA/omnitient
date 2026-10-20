@@ -1,0 +1,133 @@
+{
+  "schema": "omnitient/work-package",
+  "schema_version": 1,
+  "project": "omnitient",
+  "initiative": "provenance",
+  "work_package": "o2-git-pinned-context",
+  "title": "Verify pinned Git revisions of context locally",
+  "stage": "draft",
+  "objective": "O1 records the Git revision a context file was taken from but never checks it.\nLet a package verify, from a local repository only, that a pinned revision exists and that the file at that revision has the expected digest, so a handoff can say whether the supplied content really corresponds to the pinned revision.\nVerification is read-only and optional; packages without git provenance behave exactly as in O1.",
+  "scope": [
+    "Verify that a context reference's supplied git revision exists in a local repository mapped to the reference's root, and that the file at that revision has the expected digest.",
+    "Report the outcome through readiness diagnostics and show the verified or unverified state in `show` and in handoffs.",
+    "Keep verification optional: a reference without git provenance is handled as in O1.",
+    "Cover the behaviour with offline tests that create temporary local repositories.",
+    "Update the contract with the new semantics."
+  ],
+  "exclusions": [
+    "No fetch, clone, pull, remote lookup or any other network access.",
+    "No Git synchronisation, checkout management or worktree changes.",
+    "No change to the approval-covered digest rules or to existing diagnostic codes.",
+    "No engine state, model execution or review launching."
+  ],
+  "acceptance": [
+    "A reference pinned to a revision whose file content matches the digest is reported as verified, without checking that revision out.",
+    "A missing revision, a missing path at the revision and a content mismatch are diagnosed distinctly.",
+    "Tests run offline against temporary repositories and never touch the user's repositories or Git configuration.",
+    "Handoff output stays byte-identical for identical inputs and contains no host paths."
+  ],
+  "dependencies": [
+    {
+      "package": "omnitient/foundation/o1-work-package-cli",
+      "note": "The O1 slice must be merged first."
+    }
+  ],
+  "roots": [
+    {
+      "name": "omnitient",
+      "description": ""
+    }
+  ],
+  "context": [
+    {
+      "id": "contract",
+      "root": "omnitient",
+      "path": "docs/o1-contract.md",
+      "sha256": "4deb45fb58c2956dac3e98092c1949918b03c947d12ffd303ed39df3f2eb18f0",
+      "required": true,
+      "mode": "embed",
+      "purpose": "The O1 contract this slice extends: section 3.1 defines git provenance and section 6 context resolution.",
+      "git": {
+        "revision": "f888583e83f7d0e472db080713afb991af3f74be",
+        "repository": "omnitient"
+      }
+    },
+    {
+      "id": "context-module",
+      "root": "omnitient",
+      "path": "src/omnitient/context.py",
+      "sha256": "b07e721ca077c15977af14574c98ea3fcf5235a2553e3ea66ed562337ef5e273",
+      "required": true,
+      "mode": "embed",
+      "purpose": "Where context resolution lives; verification of a pinned revision would hook in here.",
+      "git": {
+        "revision": "e4fc1d182857d5a4069f4cab2f993f92fb6a2eff",
+        "repository": "omnitient"
+      }
+    },
+    {
+      "id": "readiness-module",
+      "root": "omnitient",
+      "path": "src/omnitient/readiness.py",
+      "sha256": "eac356482d3c84195046e159fd3aff88f1e9760ba561ec9225c32f7888809a81",
+      "required": false,
+      "mode": "embed",
+      "purpose": "Where any new readiness diagnostics would be added.",
+      "git": {
+        "revision": "b7af9941255fb512fa2d774e8d57c69ffbc249b9",
+        "repository": "omnitient"
+      }
+    }
+  ],
+  "decisions": [
+    {
+      "id": "D1",
+      "question": "Is verifying pinned Git revisions the right next slice, rather than decision subcommands or linking evidence to engine runs?",
+      "rationale": "While implementing O1, three follow-ups surfaced: verifying git provenance, `decision add` and `decision resolve` commands (decisions are hand-edited today), and richer evidence linking. None is clearly more valuable; the owner chooses.",
+      "status": "unresolved",
+      "source": "O1 implementation session (draft, not reviewed by a human)",
+      "needed_by": "planning"
+    },
+    {
+      "id": "D2",
+      "question": "Read Git objects by running the `git` executable with read-only plumbing commands, or with a pure-Python object reader?",
+      "rationale": "Omnitient has no runtime dependencies and no command-execution surface today. Running `git` adds both a dependency on an installed binary and a subprocess call that must use fixed argument lists, no shell and a sanitised environment. A pure-Python reader avoids that but must handle packfiles and is more code to get right.",
+      "status": "unresolved",
+      "source": "O1 implementation session (draft, not reviewed by a human)",
+      "needed_by": "implementation"
+    },
+    {
+      "id": "D3",
+      "question": "When a required reference's pinned revision is absent from the local repository, is that a blocker or a warning?",
+      "rationale": "Blocking is safer but makes a shallow or partial clone unable to produce an implementation handoff even when the file digest matches. The digest check already protects the content.",
+      "status": "unresolved",
+      "source": "O1 implementation session (draft, not reviewed by a human)",
+      "needed_by": "implementation"
+    },
+    {
+      "id": "D4",
+      "question": "Should verification also apply to `reference` mode context, or only to embedded files?",
+      "status": "unresolved",
+      "source": "O1 implementation session (draft, not reviewed by a human)",
+      "needed_by": "implementation"
+    }
+  ],
+  "recommendations": [
+    {
+      "id": "R1",
+      "stage": "planning",
+      "effort": "high",
+      "account": "regular account",
+      "note": "Declared preference only; availability is not verified and nothing here authorizes execution."
+    },
+    {
+      "id": "R2",
+      "stage": "implementation",
+      "effort": "high",
+      "account": "regular account",
+      "note": "Declared preference only; availability is not verified and nothing here authorizes execution."
+    }
+  ],
+  "evidence": [],
+  "approvals": []
+}

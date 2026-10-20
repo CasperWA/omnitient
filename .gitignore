@@ -20,3 +20,6 @@ htmlcov/
 .env.*
 *.local.json
 .claude/settings.local.json
+
+# Derived handoff metadata records host paths and generation time
+*.meta.json
