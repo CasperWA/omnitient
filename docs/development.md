@@ -51,7 +51,14 @@ It needs `flit_core`, which the `dev` extra installs.
 The render tests parse every handoff with `markdown-it-py` (a CommonMark parser, installed by the `dev` extra) to check that author text cannot change the document's structure; it is a test dependency only.
 Tests that could block, such as opening a FIFO, run the command in a child process with a timeout, so a regression fails the test instead of hanging the run.
 
-To try another interpreter, create a disposable environment outside the repository and install the same test dependencies:
+Tested versions: 3.12.15 (the development environment), 3.13.16, 3.14.4 and 3.15.0.
+All four ran the full suite and the installed-wheel test; the lint, format and type hooks stay on 3.12.
+Only one interpreter is needed to use or develop Omnitient.
+
+To try another interpreter, create a disposable environment outside the repository and install the same test dependencies.
+Create it with `uv venv --seed` as below.
+Where an interpreter lacks `ensurepip` (for example a distribution Python without its `-venv` package, which was the case for 3.13 and 3.15 here), `uv venv` still works for an installed interpreter; `virtualenv -p /usr/bin/python3.15 PATH` also works, as does `mkvirtualenv`, but upgrade `pip` afterwards because the bundled seed can be older.
+To run the pytest hooks under that interpreter, put its `bin` first on a `PATH` without unusual entries, install `pre-commit` there as well, and run `pre-commit run pytest --all-files` and `pre-commit run pytest-packaging --all-files --hook-stage manual`; check the printed interpreter in the coverage banner.
 
 ```bash
 uv venv --python /usr/bin/python3.14 --no-python-downloads --seed /tmp/omnitient-py314

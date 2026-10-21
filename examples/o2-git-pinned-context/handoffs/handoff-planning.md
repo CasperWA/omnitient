@@ -8,7 +8,7 @@
 
 - Target stage: planning
 - Package stage: draft
-- Revision (content digest): `c3c120c1b663d759a80d78aae3e0bf1c20428837776d4b65e69a4342bd35634c`
+- Revision (content digest): `1e6239c9ce6c819b19553e98b7cd9593b6e59495d40364cf4bcdf08ac7e22b02`
 - Approval: not required for a planning handoff
 
 ### Blockers
@@ -127,11 +127,11 @@ Approval records are workflow provenance (who recorded approval of which revisio
 ### Context `contract`
 
 - File: `omnitient:docs/o1-contract.md`
-- Expected SHA-256: `c548d33f4a435a05448f0eabae5b6045fad40e572e012e79cb46b6535a550f49`
+- Expected SHA-256: `28a61faaf28846674ff49e192b281ebd640e2f69dea9f05cb22213767e7829f8`
 - Required: yes; mode: embed
 - Purpose: `The O1 contract this slice extends: section 3.1 defines git provenance and section 6 context resolution.`
 - Git provenance (supplied, not verified): revision `17717c40f1a38aa6dbb7f7c82bd78b49bbb905ae`, repository `omnitient`
-- Status: embedded; digest verified; 32385 bytes.
+- Status: embedded; digest verified; 32688 bytes.
 
 ````text
 # Omnitient O1 contract and acceptance plan
@@ -502,7 +502,10 @@ Every item is an offline pytest test; none reads production state, credentials o
 
 ## 14. Supported Python
 
-`requires-python = ">=3.12"`. Development baseline 3.12. The tested range is reported in the repository README and the bootstrap report from actual runs.
+`requires-python = ">=3.12"`, with no upper bound. Development and tooling baseline 3.12.
+
+Supported means allowed by the metadata. Tested means the full suite, including the installed-wheel test, passed: CPython 3.12.15, 3.13.16, 3.14.4 and 3.15.0, standard GIL builds on Linux (x86-64).
+Free-threaded and JIT builds, Windows and macOS, and other implementations were not verified, and the runtime has no dependencies to check beyond the standard library.
 ````
 
 ### Context `context-module`
@@ -919,7 +922,7 @@ def evaluate_all(
 ## 11. Provenance
 
 - Package: `omnitient/provenance/o2-git-pinned-context`
-- Revision: `c3c120c1b663d759a80d78aae3e0bf1c20428837776d4b65e69a4342bd35634c`
+- Revision: `1e6239c9ce6c819b19553e98b7cd9593b6e59495d40364cf4bcdf08ac7e22b02`
 - Package schema: `omnitient/work-package` version 1
 - Handoff schema: `omnitient/handoff` version 1
 - This document contains no generation time and no host paths; identical inputs give identical output.

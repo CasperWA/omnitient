@@ -1,12 +1,13 @@
 # GitHub publication and review handoff
 
 Nothing in this repository has been pushed.
-The repository on GitHub is created by its owner, not by tooling.
+The intended repository is `https://github.com/CasperWA/omnitient`, currently private; publication has not been confirmed.
+The repository on GitHub is created and pushed to by its owner, not by tooling.
 This document records what is proposed for that step so it can be agreed first.
 
 ## Needed from the repository owner
 
-1. The repository URL, once it exists.
+1. Confirmation of the repository URL and when to publish; the owner plans to push manually.
 2. Authorization for exactly these pushes, to be confirmed explicitly:
    - `main`, as the initial base (one commit: ignore rules, README stub and tool baseline);
    - `feature/o1-work-package-cli`, for the O1 pull request.
@@ -25,7 +26,7 @@ One workflow, triggered on pull requests and on pushes to `main`, with read-only
 2. Set up Python 3.12 and install `.[dev]`.
 3. Run `pre-commit run --all-files`.
 4. Run `pre-commit run --all-files --hook-stage manual` for the installed-wheel test.
-5. Optionally repeat steps 2 to 4 for Python 3.14, the other tested version.
+5. Repeat steps 2 to 4 for Python 3.13, 3.14 and 3.15, the other tested versions, as normal required lanes. The pytest hooks use the `python` on `PATH`, so set up each interpreter as described in the development guide.
 
 The `runs-on` value is left to the owner.
 Workflows are not added here because the runner choice is the owner's.

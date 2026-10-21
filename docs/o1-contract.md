@@ -366,4 +366,7 @@ Every item is an offline pytest test; none reads production state, credentials o
 
 ## 14. Supported Python
 
-`requires-python = ">=3.12"`. Development baseline 3.12. The tested range is reported in the repository README and the bootstrap report from actual runs.
+`requires-python = ">=3.12"`, with no upper bound. Development and tooling baseline 3.12.
+
+Supported means allowed by the metadata. Tested means the full suite, including the installed-wheel test, passed: CPython 3.12.15, 3.13.16, 3.14.4 and 3.15.0, standard GIL builds on Linux (x86-64).
+Free-threaded and JIT builds, Windows and macOS, and other implementations were not verified, and the runtime has no dependencies to check beyond the standard library.
