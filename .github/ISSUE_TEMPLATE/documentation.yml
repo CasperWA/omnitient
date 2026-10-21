@@ -1,0 +1,44 @@
+# SPDX-FileCopyrightText: 2026 Casper Welzel Andersen
+# SPDX-FileCopyrightText: 2026 SINTEF Ocean AS
+#
+# SPDX-License-Identifier: MIT
+
+name: Documentation
+description: A document is wrong, unclear, out of date or missing.
+labels: ["documentation"]
+body:
+  - type: input
+    id: location
+    attributes:
+      label: Where
+      description: The file and section, for example `README.md`, "Quick tour".
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: What is wrong or missing?
+      description: Quote the text if it is wrong, or describe what a reader could not find out.
+    validations:
+      required: true
+  - type: textarea
+    id: suggestion
+    attributes:
+      label: Suggested wording
+      description: Optional.
+  - type: dropdown
+    id: priority
+    attributes:
+      label: Priority (optional)
+      description: |
+        A suggestion for triage.
+        Choosing a value here does not apply a label; a maintainer sets the `priority/*` label by hand.
+        High means the text is wrong in a way that leads to unsafe use, such as a false statement about approval or about what is read.
+        Medium means it misleads or blocks a reader.
+        Low means a typo or a polish.
+      options:
+        - Not set
+        - Low
+        - Medium
+        - High
+      default: 0

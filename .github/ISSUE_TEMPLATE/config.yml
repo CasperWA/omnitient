@@ -1,0 +1,10 @@
+# SPDX-FileCopyrightText: 2026 Casper Welzel Andersen
+# SPDX-FileCopyrightText: 2026 SINTEF Ocean AS
+#
+# SPDX-License-Identifier: MIT
+
+blank_issues_enabled: true
+contact_links:
+  - name: Report a vulnerability privately
+    url: https://github.com/CasperWA/omnitient/security/advisories/new
+    about: Uses GitHub private vulnerability reporting, which works only once the repository owner has enabled it. Do not describe an exploitable weakness in a public issue.

@@ -1,5 +1,53 @@
-# Development-tool configuration.
-# Project metadata and the build backend are added together with the first code.
+# SPDX-FileCopyrightText: 2026 Casper Welzel Andersen
+# SPDX-FileCopyrightText: 2026 SINTEF Ocean AS
+#
+# SPDX-License-Identifier: MIT
+
+[build-system]
+requires = ["flit_core >=4.1,<5"]
+build-backend = "flit_core.buildapi"
+
+[project]
+name = "omnitient"
+description = "Portable work packages and self-contained agent handoffs."
+readme = "README.md"
+requires-python = ">=3.12"
+license = "MIT"
+license-files = ["LICENSE", "LICENSES/*"]
+authors = [{ name = "Casper Welzel Andersen" }]
+dynamic = ["version"]
+dependencies = []
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: 3.15",
+    "Natural Language :: English",
+    "Operating System :: POSIX",
+]
+
+[project.optional-dependencies]
+dev = [
+    "flit_core >=4.1,<5",
+    "markdown-it-py ~=4.2",
+    "pre-commit ~=4.7",
+    "pytest ~=9.1",
+    "pytest-cov ~=7.1",
+]
+
+[project.urls]
+Source = "https://github.com/CasperWA/omnitient"
+
+[project.scripts]
+omnitient = "omnitient.cli:main"
+
+[tool.flit.module]
+name = "omnitient"
+
+[tool.flit.sdist]
+exclude = [".pre-commit-config.yaml", ".markdownlint.yaml", "tests/"]
 
 [tool.black]
 target-version = ["py312"]
@@ -47,7 +95,7 @@ exclude_dirs = ["tests"]
 [tool.pytest.ini_options]
 minversion = "9.1"
 testpaths = ["tests"]
-addopts = "-ra --strict-markers --strict-config"
+addopts = "-ra --strict-markers --strict-config --cov=omnitient --cov-report=term-missing:skip-covered"
 markers = [
   "packaging: builds a wheel and installs it into a throwaway virtualenv (offline)",
 ]
