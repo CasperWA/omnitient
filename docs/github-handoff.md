@@ -35,7 +35,15 @@ Not proposed: deployment, scheduled or write-capable jobs, package publication, 
 ## Minimal repository templates
 
 - A pull request template with three prompts: what changed, how it was checked (`pre-commit` and tests), and whether the contract in `docs/o1-contract.md` changed.
-- No issue templates and no CODEOWNERS file until there is more than one contributor.
+- A small set of issue forms.
+  They are useful even with one contributor, because independent reviews, the open decisions of a work package and the next slices all arrive as findings that need a uniform record and a place to be triaged; without them the history of why something changed lives in chat.
+  They are adapted from the structure of a mature project's forms (a required problem statement, the affected area, a reproduction or scenario, acceptance criteria) but carry nothing from that project; every field refers to Omnitient's own commands, contract sections and files:
+  1. *Bug report*: what is wrong; the command and contract section affected; the exact command and a synthetic reproduction (never real package files, credentials or host paths); expected and actual behaviour, with exit code and diagnostic code; Omnitient and Python versions.
+  2. *Review finding*: the file and line or the contract section; the failure scenario with concrete inputs and the wrong outcome; severity, with whether it is a correctness, safety-boundary or documentation problem; a suggested fix, optional; acceptance criteria as testable conditions.
+  3. *Contract or behaviour change*: the contract section; what should change and why; whether any diagnostic code, exit code or stored format changes; what the change must never weaken (the approval, bounds, no-network and no-execution rules).
+  A `config.yml` would keep blank issues allowed and point suspected vulnerabilities to private reporting.
+  Nothing is created on GitHub, and no `.github` files are added here, until the owner agrees.
+- No CODEOWNERS file until there is more than one contributor.
 - Suggested branch protection for `main` once CI exists: require the CI check and a pull request, and disallow force pushes.
 
 ## Independent review handoff
@@ -47,8 +55,8 @@ Where to start:
 
 1. [docs/o1-contract.md](o1-contract.md) is the specification; check the code against it.
 2. `src/omnitient/context.py` and `src/omnitient/rules.py`: path safety, symlink handling, forbidden files, size bounds.
-3. `src/omnitient/render.py` with `tests/test_render.py`: can embedded context or package text impersonate a control section?
-4. `src/omnitient/store.py`: no-clobber creation, lock file, conflict detection.
+3. `src/omnitient/render.py` with `tests/test_render.py`: can embedded context or package text impersonate or hide a control section under CommonMark? The tests parse with `markdown-it-py`.
+4. `src/omnitient/store.py` and `src/omnitient/safeio.py`: no-clobber creation, lock file, conflict detection, bounded reads, and the handoff bundle protocol (contract section 8.4).
 5. `src/omnitient/readiness.py` and `src/omnitient/ops.py`: do the approval and staleness rules match the contract?
 
 Questions worth asking:
