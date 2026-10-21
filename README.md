@@ -136,4 +136,5 @@ Exit codes: `0` success; `1` refused or invalid input; `2` usage error; `3` vali
 
 - [docs/o1-contract.md](docs/o1-contract.md): the O1 contract, schema, readiness rules and acceptance plan.
 - [docs/development.md](docs/development.md): environment, checks, tests and conventions.
-- [docs/github-handoff.md](docs/github-handoff.md): the proposal for publication, CI and independent review.
+- [docs/ci.md](docs/ci.md): the CI workflow, runner selection and the steps for making the repository public.
+- [docs/github-handoff.md](docs/github-handoff.md): the state of the GitHub repository, its templates and labels, and the independent review handoff.

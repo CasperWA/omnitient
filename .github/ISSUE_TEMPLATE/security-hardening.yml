@@ -1,0 +1,75 @@
+# SPDX-FileCopyrightText: 2026 Casper Welzel Andersen
+# SPDX-FileCopyrightText: 2026 SINTEF Ocean AS
+#
+# SPDX-License-Identifier: MIT
+
+name: Security hardening
+description: A non-sensitive idea to tighten a safety boundary (bounds, path safety, approvals, rendering).
+labels: ["security"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This form is public.
+        Do not describe an exploitable weakness, a working exploit, a credential or a real host path here.
+        For a suspected vulnerability use GitHub private vulnerability reporting from the repository's Security tab.
+        It works only if the repository owner has enabled it; it has not been verified as enabled.
+  - type: dropdown
+    id: boundary
+    attributes:
+      label: Safety boundary
+      options:
+        - Only listed context files are read
+        - Path and symlink handling
+        - Size and other bounds
+        - Approval and staleness
+        - Rendering of untrusted text
+        - Persistence and file creation
+        - No network and no execution
+        - Packaging or CI
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: location
+    attributes:
+      label: Where
+      description: The file and line, or the contract section.
+      placeholder: "for example src/omnitient/context.py, or contract 6.1"
+  - type: textarea
+    id: hardening
+    attributes:
+      label: Proposed hardening
+      description: What should be stricter or more explicit, and what ordinary use it must still allow.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: Testable conditions, one per line.
+    validations:
+      required: true
+  - type: dropdown
+    id: priority
+    attributes:
+      label: Priority (optional)
+      description: |
+        A suggestion for triage.
+        Choosing a value here does not apply a label; a maintainer sets the `priority/*` label by hand.
+        High means a boundary is known to be weaker than the contract says.
+        Medium means defence in depth for a plausible case.
+        Low means a precaution against an unlikely case.
+      options:
+        - Not set
+        - Low
+        - Medium
+        - High
+      default: 0
+  - type: checkboxes
+    id: confidentiality
+    attributes:
+      label: Confidentiality
+      options:
+        - label: This contains no exploit details, credentials or host paths.
+          required: true

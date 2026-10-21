@@ -1,0 +1,188 @@
+# SPDX-FileCopyrightText: 2026 Casper Welzel Andersen
+# SPDX-FileCopyrightText: 2026 SINTEF Ocean AS
+#
+# SPDX-License-Identifier: MIT
+
+# Pull request and main checks. See docs/ci.md for the runner policy, the
+# download behaviour and the steps for making the repository public.
+#
+# While the repository is private, jobs run on this repository's own
+# self-hosted runners and only for pull requests from this repository.
+# While it is public, they run on GitHub-hosted runners instead, and the
+# self-hosted selector below is not used.
+
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # Ignore any pip configuration of the machine; the job installs from the
+  # default index into a job-local environment.
+  PIP_CONFIG_FILE: /dev/null
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  PIP_NO_INPUT: "1"
+
+jobs:
+  checks:
+    name: Format, lint, types and docs (Python 3.12)
+    # Private repository: same-repository pull requests and pushes only.
+    if: >-
+      !github.event.repository.private ||
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
+    # Private: this repository's runners, selected by four labels. Not bare
+    # `self-hosted`, and not the custom `ubuntu-latest` label that those
+    # runners also carry. Public: a fixed GitHub-hosted image, never
+    # `ubuntu-latest`, which the attached runners would also match.
+    runs-on: ${{ github.event.repository.private && fromJSON('["self-hosted","Linux","X64","sintef-desktop-cwa"]') || 'ubuntu-24.04' }}
+    timeout-minutes: 30
+    env:
+      PYTHON_VERSION: "3.12"
+      REPO_PRIVATE: ${{ github.event.repository.private }}
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Create a job-local scratch directory
+        shell: bash
+        run: |
+          scratch="$(mktemp -d "${RUNNER_TEMP}/omnitient-ci.XXXXXX")"
+          {
+            echo "CI_SCRATCH=${scratch}"
+            echo "PIP_CACHE_DIR=${scratch}/pip-cache"
+            echo "UV_CACHE_DIR=${scratch}/uv-cache"
+            echo "PRE_COMMIT_HOME=${scratch}/pre-commit"
+          } >> "${GITHUB_ENV}"
+
+      - name: Set up Python (GitHub-hosted runner)
+        if: ${{ !github.event.repository.private }}
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Create the virtual environment
+        shell: bash
+        run: |
+          if [ "${REPO_PRIVATE}" = "true" ]; then
+            # Self-hosted: use the machine's own interpreter and never download one.
+            command -v uv >/dev/null || { echo "::error::uv is not on this runner's PATH (docs/ci.md)"; exit 1; }
+            uv venv --python "python${PYTHON_VERSION}" --no-python-downloads --seed "${CI_SCRATCH}/venv"
+          else
+            python -m venv "${CI_SCRATCH}/venv"
+          fi
+          echo "${CI_SCRATCH}/venv/bin" >> "${GITHUB_PATH}"
+          echo "VIRTUAL_ENV=${CI_SCRATCH}/venv" >> "${GITHUB_ENV}"
+
+      - name: Check the interpreter
+        shell: bash
+        run: |
+          python -c "import sys; print(sys.version); assert sys.version_info[:2] == tuple(map(int, '${PYTHON_VERSION}'.split('.')))"
+
+      - name: Install the development extra
+        shell: bash
+        run: python -m pip install -e ".[dev]"
+
+      # The pytest hooks run in the test jobs, once per interpreter.
+      - name: Run the pre-commit checks
+        shell: bash
+        env:
+          SKIP: pytest
+        run: pre-commit run --all-files --show-diff-on-failure
+
+      - name: Remove the scratch directory
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          case "${CI_SCRATCH:-}" in
+            "${RUNNER_TEMP}"/omnitient-ci.*) rm -rf -- "${CI_SCRATCH}" ;;
+          esac
+
+  tests:
+    name: Tests (Python ${{ matrix.python-version }})
+    if: >-
+      !github.event.repository.private ||
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ${{ github.event.repository.private && fromJSON('["self-hosted","Linux","X64","sintef-desktop-cwa"]') || 'ubuntu-24.04' }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        python-version: ["3.12", "3.13", "3.14", "3.15"]
+    env:
+      PYTHON_VERSION: ${{ matrix.python-version }}
+      REPO_PRIVATE: ${{ github.event.repository.private }}
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Create a job-local scratch directory
+        shell: bash
+        run: |
+          scratch="$(mktemp -d "${RUNNER_TEMP}/omnitient-ci.XXXXXX")"
+          {
+            echo "CI_SCRATCH=${scratch}"
+            echo "PIP_CACHE_DIR=${scratch}/pip-cache"
+            echo "UV_CACHE_DIR=${scratch}/uv-cache"
+            # pre-commit clones every hook repository's manifest even for one hook.
+            echo "PRE_COMMIT_HOME=${scratch}/pre-commit"
+          } >> "${GITHUB_ENV}"
+
+      - name: Set up Python (GitHub-hosted runner)
+        if: ${{ !github.event.repository.private }}
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Create the virtual environment
+        shell: bash
+        run: |
+          if [ "${REPO_PRIVATE}" = "true" ]; then
+            # Self-hosted: use the machine's own interpreter and never download one.
+            command -v uv >/dev/null || { echo "::error::uv is not on this runner's PATH (docs/ci.md)"; exit 1; }
+            uv venv --python "python${PYTHON_VERSION}" --no-python-downloads --seed "${CI_SCRATCH}/venv"
+          else
+            python -m venv "${CI_SCRATCH}/venv"
+          fi
+          echo "${CI_SCRATCH}/venv/bin" >> "${GITHUB_PATH}"
+          echo "VIRTUAL_ENV=${CI_SCRATCH}/venv" >> "${GITHUB_ENV}"
+
+      - name: Check the interpreter
+        shell: bash
+        run: |
+          python -c "import sys; print(sys.version); assert sys.version_info[:2] == tuple(map(int, '${PYTHON_VERSION}'.split('.')))"
+
+      - name: Install the development extra
+        shell: bash
+        run: python -m pip install -e ".[dev]"
+
+      - name: Run the functional tests
+        shell: bash
+        run: pre-commit run pytest --all-files --show-diff-on-failure
+
+      - name: Run the installed-package test
+        shell: bash
+        run: pre-commit run pytest-packaging --all-files --hook-stage manual --show-diff-on-failure
+
+      - name: Remove the scratch directory
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          case "${CI_SCRATCH:-}" in
+            "${RUNNER_TEMP}"/omnitient-ci.*) rm -rf -- "${CI_SCRATCH}" ;;
+          esac

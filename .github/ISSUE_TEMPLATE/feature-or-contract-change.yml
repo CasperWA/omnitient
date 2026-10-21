@@ -1,0 +1,74 @@
+# SPDX-FileCopyrightText: 2026 Casper Welzel Andersen
+# SPDX-FileCopyrightText: 2026 SINTEF Ocean AS
+#
+# SPDX-License-Identifier: MIT
+
+name: Feature or contract change
+description: Propose new behaviour, or a change to what the O1 contract specifies.
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What can you not do, or do safely, today?
+    validations:
+      required: true
+  - type: input
+    id: contract
+    attributes:
+      label: Contract section
+      description: The section of `docs/o1-contract.md` this touches, or "new".
+      placeholder: "for example 8.4 Outputs"
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed change
+      description: What should change, and why this over the alternatives.
+    validations:
+      required: true
+  - type: checkboxes
+    id: interface
+    attributes:
+      label: Interface impact
+      description: Diagnostic codes, exit codes and the stored format are part of the interface.
+      options:
+        - label: Changes or adds a diagnostic code.
+        - label: Changes an exit code.
+        - label: Changes the stored work-package format or the schema version.
+        - label: Changes handoff output.
+        - label: None of these.
+  - type: textarea
+    id: invariants
+    attributes:
+      label: What must not be weakened
+      description: >-
+        Name the rules this change must leave intact, for example that approvals are never recorded on a person's behalf,
+        that only listed context files are read, that nothing touches the network and that nothing is executed.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: Testable conditions, one per line.
+    validations:
+      required: true
+  - type: dropdown
+    id: priority
+    attributes:
+      label: Priority (optional)
+      description: |
+        A suggestion for triage.
+        Choosing a value here does not apply a label; a maintainer sets the `priority/*` label by hand.
+        High means other work is blocked on it.
+        Medium means it should be in the next work package.
+        Low means it can wait.
+      options:
+        - Not set
+        - Low
+        - Medium
+        - High
+      default: 0

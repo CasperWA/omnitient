@@ -1,0 +1,91 @@
+# SPDX-FileCopyrightText: 2026 Casper Welzel Andersen
+# SPDX-FileCopyrightText: 2026 SINTEF Ocean AS
+#
+# SPDX-License-Identifier: MIT
+
+name: Bug report
+description: Omnitient does something the contract says it must not, or fails on valid input.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use a synthetic reproduction.
+        Do not paste real work packages, handoffs, credentials, tokens or host paths.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What is wrong?
+      description: One or two sentences.
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Affected command or area
+      options:
+        - new
+        - validate
+        - show
+        - render
+        - approve
+        - evidence add
+        - context add / context pin
+        - schema
+        - Library API
+        - Packaging or installation
+        - Other or unsure
+    validations:
+      required: true
+  - type: input
+    id: contract
+    attributes:
+      label: Contract section
+      description: The section of `docs/o1-contract.md` that says what should happen, if you know it.
+      placeholder: "for example 4.2 Approval-covered content"
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction
+      description: The exact commands and the smallest synthetic package that shows the problem.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: behaviour
+    attributes:
+      label: Expected and actual behaviour
+      description: Include the exit code and the diagnostic code if there is one.
+    validations:
+      required: true
+  - type: textarea
+    id: versions
+    attributes:
+      label: Versions
+      description: The output of `omnitient --version` and `python --version`, and your operating system.
+      render: text
+    validations:
+      required: true
+  - type: dropdown
+    id: priority
+    attributes:
+      label: Priority (optional)
+      description: |
+        A suggestion for triage.
+        Choosing a value here does not apply a label; a maintainer sets the `priority/*` label by hand.
+        High means an approval, bound or path-safety rule can be bypassed, or data can be lost.
+        Medium means a documented behaviour is wrong with no safe workaround.
+        Low means a cosmetic problem or one with an easy workaround.
+      options:
+        - Not set
+        - Low
+        - Medium
+        - High
+      default: 0
+  - type: checkboxes
+    id: confidentiality
+    attributes:
+      label: Confidentiality
+      options:
+        - label: This report contains no credentials, real package files or host paths.
+          required: true

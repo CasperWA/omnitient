@@ -5,54 +5,80 @@ SPDX-FileCopyrightText: 2026 SINTEF Ocean AS
 SPDX-License-Identifier: MIT
 -->
 
-# GitHub publication and review handoff
+# GitHub repository and review handoff
 
-Nothing in this repository has been pushed.
-The intended repository is `https://github.com/CasperWA/omnitient`, currently private; publication has not been confirmed.
-The repository on GitHub is created and pushed to by its owner, not by tooling.
-This document records what is proposed for that step so it can be agreed first.
+The repository is `https://github.com/CasperWA/omnitient`, currently private.
+Its owner pushed `main` (one commit: ignore rules, README stub and tool baseline) and `feature/o1-work-package-cli`.
+The O1 work arrives through one draft pull request from the feature branch into `main`.
+Nothing here changes the repository's visibility, merges, releases a package or launches a review.
 
-## Needed from the repository owner
+## Decisions recorded
 
-1. Confirmation of the repository URL and when to publish; the owner plans to push manually.
-2. Authorization for exactly these pushes, to be confirmed explicitly:
-   - `main`, as the initial base (one commit: ignore rules, README stub and tool baseline);
-   - `feature/o1-work-package-cli`, for the O1 pull request.
-   No force pushes. No bypassing of signing or branch rules.
-3. Decisions deliberately left open:
-   - the license and copyright holder, which this repository does not declare;
-   - the package registry, if any, and the release process;
-   - the CI runner infrastructure.
-4. Whether the O1 commits, authored and committed by a bot identity and unsigned in this session, should be re-signed before publication.
+- **License:** the standard MIT License, with no noncommercial or no-resale restriction.
+  Copyright holders are Casper Welzel Andersen and SINTEF Ocean AS, 2026, on first-party files.
+  The owner confirmed ownership and authority for this attribution.
+  See the README for how notices are carried and [REUSE.toml](../REUSE.toml) for the files that cannot hold one.
+- **History:** the existing commits were authored by a bot identity and are unsigned; they are kept as they are.
+  No re-signing, rebase or force push.
+- **Commit trailers:** no tool or co-author trailers are added on the owner's behalf.
+- **CI runners:** repository-attached self-hosted runners while the repository is private, GitHub-hosted runners when it is public; see [ci.md](ci.md).
+- **Issue forms and labels:** the forms and labels below.
 
-## Minimal CI proposal
+## Open items
 
-One workflow, triggered on pull requests and on pushes to `main`, with read-only repository permissions and no secrets.
-
-1. Check out the repository.
-2. Set up Python 3.12 and install `.[dev]`.
-3. Run `pre-commit run --all-files`.
-4. Run `pre-commit run --all-files --hook-stage manual` for the installed-wheel test.
-5. Repeat steps 2 to 4 for Python 3.13, 3.14 and 3.15, the other tested versions, as normal required lanes. The pytest hooks use the `python` on `PATH`, so set up each interpreter as described in the development guide.
-
-The `runs-on` value is left to the owner.
-Workflows are not added here because the runner choice is the owner's.
-
-Not proposed: deployment, scheduled or write-capable jobs, package publication, and any automation that pushes or comments.
-
-## Minimal repository templates
-
-- A pull request template with three prompts: what changed, how it was checked (`pre-commit` and tests), and whether the contract in `docs/o1-contract.md` changed.
-- A small set of issue forms.
-  They are useful even with one contributor, because independent reviews, the open decisions of a work package and the next slices all arrive as findings that need a uniform record and a place to be triaged; without them the history of why something changed lives in chat.
-  They are adapted from the structure of a mature project's forms (a required problem statement, the affected area, a reproduction or scenario, acceptance criteria) but carry nothing from that project; every field refers to Omnitient's own commands, contract sections and files:
-  1. *Bug report*: what is wrong; the command and contract section affected; the exact command and a synthetic reproduction (never real package files, credentials or host paths); expected and actual behaviour, with exit code and diagnostic code; Omnitient and Python versions.
-  2. *Review finding*: the file and line or the contract section; the failure scenario with concrete inputs and the wrong outcome; severity, with whether it is a correctness, safety-boundary or documentation problem; a suggested fix, optional; acceptance criteria as testable conditions.
-  3. *Contract or behaviour change*: the contract section; what should change and why; whether any diagnostic code, exit code or stored format changes; what the change must never weaken (the approval, bounds, no-network and no-execution rules).
-  A `config.yml` would keep blank issues allowed and point suspected vulnerabilities to private reporting.
-  Nothing is created on GitHub, and no `.github` files are added here, until the owner agrees.
+- The package registry, if any, and the release process; nothing is published.
+- Private vulnerability reporting.
+  The issue chooser and the security form point to GitHub private vulnerability reporting.
+  Only the repository owner can enable it (Settings, Code security), and it has not been verified as enabled, so the link does not work until then.
+- Branch protection for `main`: require a pull request and the CI checks, and disallow force pushes, once the checks have run.
+  Note that a skipped check counts as passing; see [ci.md](ci.md).
 - No CODEOWNERS file until there is more than one contributor.
-- Suggested branch protection for `main` once CI exists: require the CI check and a pull request, and disallow force pushes.
+
+## CI
+
+One workflow with two jobs, described in [ci.md](ci.md): static checks on Python 3.12, and the functional and installed-wheel tests on Python 3.12, 3.13, 3.14 and 3.15.
+The `.github/workflows/ci.yml` file takes effect for pull requests when it is on the branch being tested; it triggers on pushes to `main` only after it is merged there.
+
+## Issue forms and pull request template
+
+Forms live in `.github/ISSUE_TEMPLATE/`; blank issues stay enabled.
+
+| Form | Label applied by the form |
+| --- | --- |
+| Bug report | `bug` |
+| Feature or contract change | `enhancement` |
+| Documentation | `documentation` |
+| Security hardening (non-sensitive) | `security` |
+
+Each form has an optional priority dropdown with guidance.
+Choosing a priority does not apply a label; a maintainer sets the `priority/*` label by hand.
+No triage automation exists.
+
+`.github/PULL_REQUEST_TEMPLATE.md` asks for one coherent, reviewable work package, which may relate to several issues, with its scope, verification, contract changes, risks and review status.
+It does not pre-fill any issue-closing reference.
+
+GitHub reads issue forms and the pull request template from the default branch.
+Until this work is merged into `main`, they are not offered to new issues and pull requests.
+This is a platform limitation and was not worked around by changing `main` directly.
+
+## Labels
+
+Labels that already existed were left unchanged: `bug`, `documentation`, `enhancement` and GitHub's other defaults.
+These were added:
+
+| Label | Meaning |
+| --- | --- |
+| `security` | Hardening or a safety-boundary concern, reported without exploit details. |
+| `ci` | Workflows, runners and checks. |
+| `decision-needed` | Waiting for a decision by the owner. |
+| `priority/low` | Can wait; cosmetic or with an easy workaround. |
+| `priority/medium` | Belongs in the next work package. |
+| `priority/high` | Blocks other work, or a safety-boundary rule can be bypassed. |
+
+`bug`, `enhancement`, `documentation`, `security` and `ci` say what kind of issue it is.
+`decision-needed` says what it is waiting for.
+`priority/*` says how soon.
+Combine one of each kind where it helps.
 
 ## Independent review handoff
 
@@ -66,6 +92,9 @@ Where to start:
 3. `src/omnitient/render.py` with `tests/test_render.py`: can embedded context or package text impersonate or hide a control section under CommonMark? The tests parse with `markdown-it-py`.
 4. `src/omnitient/store.py` and `src/omnitient/safeio.py`: no-clobber creation, lock file, conflict detection, bounded reads, and the handoff bundle protocol (contract section 8.4).
 5. `src/omnitient/readiness.py` and `src/omnitient/ops.py`: do the approval and staleness rules match the contract?
+
+6. The readiness delta, added after the O1 code: `LICENSE`, `REUSE.toml` and the notices; `.github/workflows/ci.yml` with [ci.md](ci.md) (runner selection, permissions, the public transition); the issue forms and the pull request template.
+   Check that the workflow cannot reach a self-hosted runner from outside this repository, and that nothing in it has write access or a secret.
 
 Questions worth asking:
 

@@ -20,4 +20,6 @@ Rules that are easy to get wrong:
   Do not add scanning, URL fetching, credential files or template execution.
 - Keep validation, context resolution and rendering free of CLI I/O.
 - Publication (pushes, pull requests, the GitHub repository) needs the owner's go-ahead; see [docs/github-handoff.md](docs/github-handoff.md).
+- New first-party files need the SPDX notice described in [docs/development.md](docs/development.md); do not edit `LICENSE` or `LICENSES/`.
+- Workflows follow [docs/ci.md](docs/ci.md): no secrets, no write permissions, no `pull_request_target`, and no change to the runner selection without the owner's go-ahead.
 - Run `pre-commit run --all-files` before committing.

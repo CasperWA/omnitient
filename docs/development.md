@@ -22,7 +22,7 @@ The local pytest hooks use the `python` on `PATH`, so an inactive environment te
 
 ## Checks
 
-`pre-commit` is the shared entry point.
+`pre-commit` is the shared entry point, and CI runs it (see [ci.md](ci.md)).
 
 ```bash
 pre-commit run --all-files                       # what runs on every commit
@@ -36,6 +36,7 @@ pre-commit run --all-files --hook-stage manual   # also the installed-wheel test
 | Types | mypy, strict, on `src/` |
 | Security lint | Bandit on `src/` |
 | Docs | markdownlint, and an offline check that relative Markdown links resolve |
+| Notices | REUSE lint (`fsfe/reuse-tool`): every file has a license and copyright notice, in the file or in `REUSE.toml` |
 | Files | pre-commit-hooks (JSON, TOML, YAML, whitespace, large files, private keys, test naming) |
 | Tests | pytest: unit tests on commit, the installed-wheel test in the manual stage |
 
@@ -100,4 +101,6 @@ Keep validation, context resolution and rendering free of CLI I/O so they stay t
 - A diagnostic code is part of the interface. Add tests when adding or renaming one.
 - The example work package pins digests of repository files.
   After changing a pinned file, run `omnitient context pin` for it and render the handoff again, as described in [examples/README.md](../examples/README.md); a test fails until you do.
+- Every new first-party file needs an SPDX notice for the license and the copyright holders, in a comment where the format allows one and in `REUSE.toml` where it does not.
+  Copy the header from a neighbouring file.
 - Do not commit `*.local.json`, `*.meta.json` or anything holding host paths or credentials.
