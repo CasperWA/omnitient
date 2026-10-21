@@ -704,3 +704,22 @@ def test_a_failed_mode_change_leaves_the_package_and_no_stray_files(
     assert path.read_bytes() == original
     assert mode_of(path) == 0o600
     assert listing(tmp_path) == ["p.json"]  # no temporary file, no lock
+
+
+def test_a_forced_bundle_that_cannot_set_modes_leaves_no_temporary_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    publish(tmp_path)
+    (tmp_path / "h.md").chmod(0o600)
+
+    def refuse(_fd: int, _mode: int) -> None:
+        raise OSError(1, "Operation not permitted")
+
+    monkeypatch.setattr(os, "fchmod", refuse)
+    with pytest.raises(OmnitientError) as info:
+        publish(tmp_path, {"h.md": b"new", "h.json": b"{}"}, overwrite=True)
+    assert code_of(info) == "output.unwritable"
+    # the old marker is gone first, so the untouched data is not vouched for
+    assert listing(tmp_path) == ["h.json", "h.md"]
+    assert (tmp_path / "h.md").read_bytes() == FILES["h.md"]
+    assert mode_of(tmp_path / "h.md") == 0o600
