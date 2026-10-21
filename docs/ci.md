@@ -7,7 +7,7 @@ SPDX-License-Identifier: MIT
 
 # Continuous integration
 
-One workflow, [.github/workflows/ci.yml](../.github/workflows/ci.yml), runs on pull requests and on pushes to `main`.
+One workflow, [.github/workflows/ci.yml](../.github/workflows/ci.yml), runs on pull requests, on pushes to `main` and on manual dispatch of `main`.
 It has no secrets, no deployment, no package publication and no write access to the repository.
 
 | Job | Python | What runs |
@@ -19,6 +19,33 @@ The matrix has `fail-fast: false`, so every interpreter reports its own result, 
 Python 3.15 is an ordinary lane; it is not allowed to fail.
 Jobs time out after 30 minutes (checks) and 20 minutes (tests).
 Each lane asks `actions/setup-python` for its minor version, which resolves to the newest patch release in the runner's tool cache or, failing that, the latest stable one it can download, and then checks that the interpreter it got is that minor version, a standard (GIL) build, and the one running inside the job's own virtual environment.
+
+## Manual runs
+
+A maintainer can run the same checks on demand against `main`.
+`workflow_dispatch` takes no inputs, so the run uses the ref chosen in GitHub's ref selector, and the checkout takes that ref's current commit.
+Both jobs run only when that ref is `refs/heads/main`; a manual run on any other branch or tag skips every job, which is not a pass.
+The runner selection, permissions, matrix, timeouts and cleanup are those of every other run.
+Manual runs have their own concurrency group (`ci-CI-manual-refs/heads/main`), do not cancel a running job and do not displace a queued push run (a newer queued manual run does replace an older queued one).
+
+In the Actions UI: open **Actions**, choose **CI**, select **Run workflow**, keep **Branch: main** and confirm.
+With the GitHub CLI:
+
+```bash
+gh workflow run ci.yml --repo CasperWA/omnitient --ref main
+gh run list --repo CasperWA/omnitient --workflow ci.yml --event workflow_dispatch --limit 1
+```
+
+What this does and does not show:
+
+- The workflow file must contain `workflow_dispatch` on the default branch before **Run workflow** or `gh workflow run` is available for normal use, so there is no manual run before this change is merged.
+- `tests/test_ci_workflow.py` checks the job conditions and runner selection against fixed event cases.
+  That is a static predicate check, not an executed dispatch.
+- A dispatch made after the repository becomes public is the way to verify the GitHub-hosted path.
+  Re-running an old private run replays that run's event and visibility and is not evidence about a new public event.
+- Dispatch does not explain why no `push` run appeared after the squash merge of O1; that remains unexplained.
+
+To verify a manual run, check that its event is `workflow_dispatch`, that its head SHA is the `main` commit you intended, that every job in the table above ran (none skipped) and passed, that the "Describe the runner" step shows the expected environment (the dedicated self-hosted runner while private, a GitHub-hosted one once public), and that each job's last step removed its scratch directory.
 
 ## Permissions and credentials
 
@@ -132,7 +159,7 @@ This is a checklist; nothing here is done by the workflow.
    A public repository must not keep a runner that outside pull requests could use.
 3. Change the visibility yourself.
 4. In the Actions settings, require approval for workflows from outside collaborators and keep the default token read-only.
-5. Check the first GitHub-hosted run and each of its four Python lanes, including the interpreter each one reports, before treating the hosted path as tested.
+5. Dispatch the workflow on `main` (see "Manual runs") and check the first GitHub-hosted run and each of its four Python lanes, including the interpreter each one reports, before treating the hosted path as tested.
 6. Review which checks branch protection requires.
 
 ## Local equivalents
