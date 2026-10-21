@@ -8,7 +8,7 @@
 
 - Target stage: planning
 - Package stage: draft
-- Revision (content digest): `96fb1bdc7dfd120e51562a2215077491dc9a81393f6ea019e6e9fd01b86c3fe3`
+- Revision (content digest): `c3c120c1b663d759a80d78aae3e0bf1c20428837776d4b65e69a4342bd35634c`
 - Approval: not required for a planning handoff
 
 ### Blockers
@@ -130,7 +130,7 @@ Approval records are workflow provenance (who recorded approval of which revisio
 - Expected SHA-256: `c548d33f4a435a05448f0eabae5b6045fad40e572e012e79cb46b6535a550f49`
 - Required: yes; mode: embed
 - Purpose: `The O1 contract this slice extends: section 3.1 defines git provenance and section 6 context resolution.`
-- Git provenance (supplied, not verified): revision `518f1cace512bc766728ef958c32d3bdfeac2db7`, repository `omnitient`
+- Git provenance (supplied, not verified): revision `17717c40f1a38aa6dbb7f7c82bd78b49bbb905ae`, repository `omnitient`
 - Status: embedded; digest verified; 32385 bytes.
 
 ````text
@@ -511,7 +511,7 @@ Every item is an offline pytest test; none reads production state, credentials o
 - Expected SHA-256: `366282c98a80d93d1f3798e7c2d73639708a32d514248f7307b00a3bd16957b6`
 - Required: yes; mode: embed
 - Purpose: `Where context resolution lives; verification of a pinned revision would hook in here.`
-- Git provenance (supplied, not verified): revision `518f1cace512bc766728ef958c32d3bdfeac2db7`, repository `omnitient`
+- Git provenance (supplied, not verified): revision `17717c40f1a38aa6dbb7f7c82bd78b49bbb905ae`, repository `omnitient`
 - Status: embedded; digest verified; 9172 bytes.
 
 ````text
@@ -919,7 +919,7 @@ def evaluate_all(
 ## 11. Provenance
 
 - Package: `omnitient/provenance/o2-git-pinned-context`
-- Revision: `96fb1bdc7dfd120e51562a2215077491dc9a81393f6ea019e6e9fd01b86c3fe3`
+- Revision: `c3c120c1b663d759a80d78aae3e0bf1c20428837776d4b65e69a4342bd35634c`
 - Package schema: `omnitient/work-package` version 1
 - Handoff schema: `omnitient/handoff` version 1
 - This document contains no generation time and no host paths; identical inputs give identical output.

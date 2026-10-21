@@ -48,7 +48,7 @@
       "mode": "embed",
       "purpose": "The O1 contract this slice extends: section 3.1 defines git provenance and section 6 context resolution.",
       "git": {
-        "revision": "518f1cace512bc766728ef958c32d3bdfeac2db7",
+        "revision": "17717c40f1a38aa6dbb7f7c82bd78b49bbb905ae",
         "repository": "omnitient"
       }
     },
@@ -61,7 +61,7 @@
       "mode": "embed",
       "purpose": "Where context resolution lives; verification of a pinned revision would hook in here.",
       "git": {
-        "revision": "518f1cace512bc766728ef958c32d3bdfeac2db7",
+        "revision": "17717c40f1a38aa6dbb7f7c82bd78b49bbb905ae",
         "repository": "omnitient"
       }
     },
