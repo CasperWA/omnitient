@@ -64,7 +64,9 @@ Dependabot's pull requests come from branches in this repository, so the same-re
 By the owner's decision, the jobs are also skipped on the private path when the run was triggered by `dependabot[bot]` (`github.triggering_actor`).
 A Dependabot pull request therefore gets no checks when it is opened or rebased, which is not test evidence.
 To test it, a person reviews the change and re-runs the workflow, or pushes to the branch; that run's triggering actor is the person, so the jobs run.
-This gate has not been exercised yet: Dependabot starts only once its configuration is on `main`.
+A re-run of a run that Dependabot started keeps that run's privileges: GitHub documents that re-runs use the privileges of `github.actor`, which stays Dependabot.
+So such a re-run executes the jobs, but with Dependabot's restricted token and without secrets, and this workflow has neither a secret nor write access that could widen.
+This gate has not been exercised yet: Dependabot starts only once its configuration is on `main`, and the re-run behaviour rests on GitHub's documentation, not on an observed run.
 It is no protection against the moving tags and version ranges that every run resolves (see "Permissions and credentials" and `pyproject.toml`); it only keeps Dependabot's out-of-range updates from running before a person has looked at them.
 On the public path, Dependabot's pull requests run on GitHub-hosted runners like any other.
 
@@ -98,7 +100,9 @@ Writes that outlive a job on a self-hosted runner:
 
 - the interpreter in the tool cache, which nothing deletes;
 - the checkout in the runner's work directory, which the next job's checkout resets with `git clean -ffdx` (visible in its log) but which stays on disk between jobs;
-- pytest's temporary directories, by inference: the workflow does not set `TMPDIR`, so pytest's base temporary directory (used by the tests and by the installed-wheel test for its wheel and virtual environment) is under the system temporary directory, where pytest keeps the last three sessions per user.
+- pytest's temporary directories: the workflow does not set `TMPDIR`, so pytest's base temporary directory (used by the tests and by the installed-wheel test for its wheel and virtual environment) is under the system temporary directory, where pytest keeps the last three sessions per user.
+  The failing lanes of run [39597534766](https://github.com/CasperWA/omnitient/actions/runs/39597534766) show `/tmp/pytest-of-root/pytest-2`, `-3`, `-4` and `-6`.
+  That is what was observed in those lanes; it does not show that every run, runner or lane behaves identically, and nothing in the workflow removes these directories.
 
 `PIP_CONFIG_FILE=/dev/null` makes pip ignore the machine's configuration files.
 It does not clear `PIP_*` environment variables, so an index URL set in the runner service's environment would still apply.

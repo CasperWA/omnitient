@@ -122,7 +122,9 @@ repos:
 
       # The example pins the contract and two modules (examples/README.md).
       # A commit that changes only the contract or the example skips the hook
-      # above, so this runs just the example's test for those files.
+      # above, so this runs just the example's test for those files. The
+      # generated handoffs are excluded from every hook (see `exclude`), so a
+      # commit that changes only them runs neither hook; CI covers that.
       - id: pytest-example
         name: pytest (pinned example)
         entry: python -m pytest -q --no-cov tests/test_example.py

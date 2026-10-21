@@ -8,7 +8,7 @@
 
 - Target stage: planning
 - Package stage: draft
-- Revision (content digest): `1f5b736b52459ae1d6f856109b5eb59e09ccd26e24593ca5e55b874da9f6c222`
+- Revision (content digest): `ecb09a570ca2bb0aac00052a86fdf525e05d47455ff49804abaa921b41c1f5fd`
 - Approval: not required for a planning handoff
 
 ### Blockers
@@ -127,11 +127,11 @@ Approval records are workflow provenance (who recorded approval of which revisio
 ### Context `contract`
 
 - File: `omnitient:docs/o1-contract.md`
-- Expected SHA-256: `6444651a39cc10e555937509d1e5f52ff1d56ef2736951da02bdb702e47314b3`
+- Expected SHA-256: `0c9c191908dc346438afd762b8c757ec988d5b14c39a016836a752bd591e23f1`
 - Required: yes; mode: embed
 - Purpose: `The O1 contract this slice extends: section 3.1 defines git provenance and section 6 context resolution.`
 - Git provenance (supplied, not verified): revision `06618873f8ca2323d04d22476a1a6f5b008f8e74`, repository `omnitient`
-- Status: embedded; digest verified; 37850 bytes.
+- Status: embedded; digest verified; 38112 bytes.
 
 ````text
 <!--
@@ -430,6 +430,7 @@ Use the returned bytes.
 Verifying a bundle and then opening its files again by name is not covered, because a `--force` run can replace them in between.
 `omnitient.store.check_bundle` reports the same problems without returning data; an empty result says only that the files verified while they were read.
 A successful read says nothing about what is on disk afterwards.
+The guarantee is about which bytes were verified, not about deep immutability: the file contents are `bytes`, but the returned manifest and file map are ordinary dictionaries that belong to the caller, and nothing stops the caller from modifying them in memory.
 
 **Interrupted or mixed bundles.** An interrupted write leaves data files and no manifest, or a manifest that fails to parse or verify.
 Treat any bundle that fails the reader rule as incomplete: do not use it.
@@ -976,7 +977,7 @@ def evaluate_all(
 ## 11. Provenance
 
 - Package: `omnitient/provenance/o2-git-pinned-context`
-- Revision: `1f5b736b52459ae1d6f856109b5eb59e09ccd26e24593ca5e55b874da9f6c222`
+- Revision: `ecb09a570ca2bb0aac00052a86fdf525e05d47455ff49804abaa921b41c1f5fd`
 - Package schema: `omnitient/work-package` version 1
 - Handoff schema: `omnitient/handoff` version 1
 - This document contains no generation time and no host paths; identical inputs give identical output.

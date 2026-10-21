@@ -39,7 +39,11 @@ pre-commit run --all-files --hook-stage manual   # also the installed-wheel test
 | Notices | REUSE lint (`fsfe/reuse-tool`): every file has a license and copyright notice, in the file or in `REUSE.toml` |
 | Workflows | actionlint (GitHub Actions workflow files) |
 | Files | pre-commit-hooks (JSON, TOML, YAML, whitespace, large files, private keys, test naming) |
-| Tests | pytest: unit tests on commit, the installed-wheel test in the manual stage, and the example's test alone when a commit changes only the contract or the example |
+| Tests | pytest: unit tests on commit, the installed-wheel test in the manual stage, and the example's test alone when a commit changes only the contract or the example's package (not its generated handoffs, see below) |
+
+The generated handoffs under `examples/*/handoffs/` are excluded from every hook, because they embed files verbatim.
+So a commit (as opposed to `pre-commit run --all-files`) that changes only those files runs neither local pytest hook, and a hand-edited committed handoff is not caught locally.
+CI catches it: its test jobs run the whole suite, and `tests/test_example.py` regenerates the handoff and compares it byte for byte.
 
 Black, Ruff, mypy and Bandit are intentionally not in the `dev` extra.
 Their versions are pinned once, in `.pre-commit-config.yaml`.

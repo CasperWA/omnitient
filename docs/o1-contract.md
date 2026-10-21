@@ -294,6 +294,7 @@ Use the returned bytes.
 Verifying a bundle and then opening its files again by name is not covered, because a `--force` run can replace them in between.
 `omnitient.store.check_bundle` reports the same problems without returning data; an empty result says only that the files verified while they were read.
 A successful read says nothing about what is on disk afterwards.
+The guarantee is about which bytes were verified, not about deep immutability: the file contents are `bytes`, but the returned manifest and file map are ordinary dictionaries that belong to the caller, and nothing stops the caller from modifying them in memory.
 
 **Interrupted or mixed bundles.** An interrupted write leaves data files and no manifest, or a manifest that fails to parse or verify.
 Treat any bundle that fails the reader rule as incomplete: do not use it.
