@@ -214,6 +214,19 @@ class TestHostMapping:
             with pytest.raises(OmnitientError):
                 build_host_mapping([f"r={bad}"])
 
+    def test_root_inside_a_secret_directory_is_refused(self, tmp_path: Path) -> None:
+        ssh = tmp_path / "home" / ".ssh"
+        (ssh / "keys").mkdir(parents=True)
+        (tmp_path / "alias").symlink_to(ssh)
+        for bad in (ssh, ssh / "keys", tmp_path / "alias"):
+            with pytest.raises(OmnitientError) as info:
+                build_host_mapping([f"r={bad}"])
+            assert info.value.diagnostics[0].code == "roots.invalid"
+            assert "'.ssh' directory" in info.value.diagnostics[0].message
+        fine = tmp_path / "secrets-manager"
+        fine.mkdir()
+        assert build_host_mapping([f"r={fine}"]).roots == {"r": fine.resolve()}
+
     def test_duplicate_name_is_ambiguous(self, repo: Path, tmp_path: Path) -> None:
         roots_file = tmp_path / "roots.json"
         roots_file.write_text(

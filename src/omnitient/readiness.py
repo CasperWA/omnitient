@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 
@@ -20,6 +21,10 @@ from omnitient.model import (
     stage_rank,
 )
 from omnitient.serialize import content_digest
+
+# A placeholder objective is ``TODO`` alone or ``TODO:`` and a note, in any
+# letter case; "TODOs in X" and "Todoist" are real objectives.
+_TODO_PLACEHOLDER = re.compile(r"TODO(?::|$)", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -81,7 +86,7 @@ def evaluate(
         )
         (blockers if required else warnings).append(diag)
 
-    if pkg.objective.strip().upper().startswith("TODO"):
+    if _TODO_PLACEHOLDER.match(pkg.objective.strip()):
         blockers.append(
             Diagnostic(
                 "content.incomplete", "blocker", "objective is a TODO placeholder"

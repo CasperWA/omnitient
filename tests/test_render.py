@@ -170,8 +170,18 @@ def test_planning_handoff_is_marked_blocked_when_planning_decisions_are_open(
 
 def test_draft_is_labelled(package: WorkPackage, mapping: HostMapping) -> None:
     md = make(package, mapping, "planning").markdown.decode("utf-8")
-    assert "**DRAFT: the package has not been approved.**" in md
+    assert "**DRAFT: the package's declared stage is draft.**" in md
     assert json.loads(make(package, mapping, "planning").json)["draft"] is True
+
+
+def test_draft_label_does_not_contradict_a_current_approval(
+    approved: WorkPackage, mapping: HostMapping
+) -> None:
+    # `stage` is outside the digest, so a hand edit can set it back to draft.
+    md = make(replace(approved, stage="draft"), mapping).markdown.decode("utf-8")
+    assert "**Status: READY for implementation.**" in md
+    assert "**DRAFT: the package's declared stage is draft.**" in md
+    assert "has not been approved" not in md
 
 
 def test_output_is_reproducible(approved: WorkPackage, mapping: HostMapping) -> None:
@@ -496,6 +506,28 @@ def test_output_limit_refuses_instead_of_truncating(
         make(approved, mapping)
     assert info.value.diagnostics[0].code == "output.too_large"
     assert "truncated" in info.value.diagnostics[0].message
+
+
+def test_only_the_requested_format_is_bounded(
+    approved: WorkPackage, mapping: HostMapping, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    handoff = render.build_handoff(
+        approved, resolve_context(approved, mapping), "implementation"
+    )
+    sizes = {
+        "md": len(render.render_markdown(handoff).encode("utf-8")),
+        "json": len(render.render_json(handoff).encode("utf-8")),
+    }
+    small, large = sorted(sizes, key=sizes.__getitem__)
+    monkeypatch.setattr(render, "MAX_OUTPUT_BYTES", sizes[small])
+    assert len(render.render_format(handoff, small)) == sizes[small]
+    for refused in (
+        lambda: render.render_format(handoff, large),
+        lambda: render.render(handoff),
+    ):
+        with pytest.raises(OmnitientError) as info:
+            refused()
+        assert info.value.diagnostics[0].code == "output.too_large"
 
 
 def test_evidence_changes_only_the_evidence_section(

@@ -15,7 +15,7 @@ import json
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 from omnitient import readiness as readiness_mod
 from omnitient.context import ResolvedContext
@@ -110,17 +110,27 @@ def build_handoff(
 
 def render(handoff: Handoff) -> RenderedHandoff:
     """Render both documents; refuse rather than exceed the output bound."""
-    markdown = render_markdown(handoff).encode("utf-8")
-    structured = render_json(handoff).encode("utf-8")
-    for name, data in (("Markdown", markdown), ("JSON", structured)):
-        if len(data) > MAX_OUTPUT_BYTES:
-            raise refusal(
-                "output.too_large",
-                f"the {name} handoff would be {len(data)} bytes; the limit is "
-                f"{MAX_OUTPUT_BYTES}. Nothing was truncated; mark large optional "
-                "context as mode 'reference' or split the work package.",
-            )
-    return RenderedHandoff(markdown, structured)
+    return RenderedHandoff(render_format(handoff, "md"), render_format(handoff, "json"))
+
+
+def render_format(handoff: Handoff, fmt: Literal["md", "json"]) -> bytes:
+    """Render one document; refuse rather than exceed the output bound.
+
+    Only the requested document is bounded, so a Markdown handoff is not
+    refused because its JSON form would be too large.
+    """
+    if fmt == "md":
+        name, data = "Markdown", render_markdown(handoff).encode("utf-8")
+    else:
+        name, data = "JSON", render_json(handoff).encode("utf-8")
+    if len(data) > MAX_OUTPUT_BYTES:
+        raise refusal(
+            "output.too_large",
+            f"the {name} handoff would be {len(data)} bytes; the limit is "
+            f"{MAX_OUTPUT_BYTES}. Nothing was truncated; mark large optional "
+            "context as mode 'reference' or split the work package.",
+        )
+    return data
 
 
 # --- Markdown ---------------------------------------------------------------
@@ -220,7 +230,8 @@ def render_markdown(handoff: Handoff) -> str:
             "do not start work from it.**"
         )
     if pkg.stage == "draft":
-        out += ["", "**DRAFT: the package has not been approved.**"]
+        # The declared stage only; readiness and approvals are stated per stage.
+        out += ["", "**DRAFT: the package's declared stage is draft.**"]
     out.append("")
 
     def section(number: int) -> None:

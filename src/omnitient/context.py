@@ -104,6 +104,12 @@ def build_host_mapping(
             raise refusal(
                 "roots.invalid", f"root {name!r}: {directory!r} is not a directory"
             )
+        if found := rules.forbidden_directory(real.parts):
+            raise refusal(
+                "roots.invalid",
+                f"root {name!r}: {directory!r} is inside a {found!r} directory, "
+                "which is never used for context",
+            )
         resolved[name] = real
     return HostMapping(resolved)
 

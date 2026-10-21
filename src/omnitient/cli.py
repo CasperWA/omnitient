@@ -285,12 +285,11 @@ def cmd_render(args: argparse.Namespace) -> int:
             _err(diag.format())
         return EXIT_NOT_READY
 
-    rendered = render.render(handoff)
     outputs: dict[str, bytes] = {}
     if args.format in {"md", "both"}:
-        outputs[f"handoff-{stage}.md"] = rendered.markdown
+        outputs[f"handoff-{stage}.md"] = render.render_format(handoff, "md")
     if args.format in {"json", "both"}:
-        outputs[f"handoff-{stage}.json"] = rendered.json
+        outputs[f"handoff-{stage}.json"] = render.render_format(handoff, "json")
 
     if args.out == "-":
         sys.stdout.buffer.write(next(iter(outputs.values())))

@@ -18,6 +18,7 @@ from typing import Any
 
 import pytest
 
+from conftest import sha
 from omnitient.cli import _truncate, main
 from omnitient.model import Decision, WorkPackage
 from omnitient.store import (
@@ -444,6 +445,37 @@ def test_render_to_stdout(run: Run, pkg_file: Path, repo: Path) -> None:
     )
     assert code == 1
     assert "render.format" in err
+
+
+def test_markdown_only_render_is_not_refused_for_the_json_size(
+    run: Run,
+    repo: Path,
+    write_package: Callable[..., Path],
+    package: WorkPackage,
+) -> None:
+    # A newline takes one byte in Markdown and two in JSON (an escaped \n), so two files
+    # within every embed limit give a JSON handoff over the output bound.
+    blob = b"\n" * 262_144
+    refs = []
+    for index in range(2):
+        (repo / f"blank{index}.txt").write_bytes(blob)
+        refs.append(
+            replace(
+                package.context[1],
+                id=f"B{index}",
+                path=f"blank{index}.txt",
+                sha256=sha(blob),
+            )
+        )
+    pkg = write_package(replace(package, context=tuple(refs)))
+    common = ("render", pkg, "--stage", "planning", "--root", f"repo={repo}")
+    code, out, _ = run(*common, "--out", "-", "--format", "md")
+    assert code == 0
+    assert len(out.encode("utf-8")) > 2 * len(blob)  # both files are embedded
+    code, _, err = run(*common, "--out", "-", "--format", "json")
+    assert code == 1
+    assert "output.too_large" in err
+    assert "JSON handoff" in err
 
 
 def test_full_workflow_from_scaffold_to_ready_handoff(

@@ -10,6 +10,7 @@ from __future__ import annotations
 import fnmatch
 import re
 import unicodedata
+from collections.abc import Sequence
 from datetime import datetime
 from urllib.parse import urlsplit
 
@@ -40,12 +41,18 @@ FORBIDDEN_NAMES = (
     ".netrc",
     ".npmrc",
     ".pypirc",
+    ".git-credentials",
+    ".pgpass",
     "auth.json",
     "credentials*",
+    "kubeconfig",
     "*.pem",
     "*.key",
     "*.p12",
+    "*.pfx",
     "id_rsa*",
+    "id_dsa*",
+    "id_ecdsa*",
     "id_ed25519*",
 )
 
@@ -123,6 +130,11 @@ def relative_path_problem(path: str) -> str | None:
         if part in {"", ".", ".."}:
             return "must not contain empty, '.' or '..' components"
     return None
+
+
+def forbidden_directory(parts: Sequence[str]) -> str | None:
+    """The first of ``parts`` (directory names) that is never used, or ``None``."""
+    return next((p for p in parts if p.lower() in FORBIDDEN_DIRECTORIES), None)
 
 
 def forbidden_reason(path: str) -> str | None:

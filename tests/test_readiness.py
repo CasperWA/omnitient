@@ -10,6 +10,8 @@ from __future__ import annotations
 from dataclasses import replace
 from pathlib import Path
 
+import pytest
+
 from omnitient import ops, readiness
 from omnitient.context import HostMapping, resolve_context
 from omnitient.model import Decision, HandoffStage, WorkPackage
@@ -89,6 +91,26 @@ def test_content_incomplete(package: WorkPackage, mapping: HostMapping) -> None:
         "content.incomplete"
     ]
     assert "content.incomplete" in codes(evaluate(bare, mapping, "implementation"))
+
+
+@pytest.mark.parametrize(
+    ("objective", "placeholder"),
+    [
+        ("TODO", True),
+        ("  todo  ", True),
+        ("TODO: state the objective of this work package.", True),
+        ("Todo:later", True),
+        ("Todoist integration for the team.", False),
+        ("TODOs in module X must be removed.", False),
+        ("TODO-list cleanup in the CLI.", False),
+        ("Remove the last TODO: comments.", False),
+    ],
+)
+def test_only_a_todo_placeholder_objective_is_incomplete(
+    package: WorkPackage, mapping: HostMapping, objective: str, placeholder: bool
+) -> None:
+    report = evaluate(replace(package, objective=objective), mapping, "planning")
+    assert ("content.incomplete" in codes(report)) is placeholder
 
 
 def test_schema_valid_is_not_ready(mapping: HostMapping) -> None:

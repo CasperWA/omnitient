@@ -147,7 +147,8 @@ A package is **ready for stage S** when it is schema-valid and has no blocker be
 | Code | Severity | Condition |
 | --- | --- | --- |
 | `decision.unresolved` | blocker | A decision is blocking for S. Other unresolved decisions are listed as warnings. |
-| `context.missing` | blocker if required, else warning | The file does not exist, is not a regular file or cannot be read. |
+| `context.missing` | blocker if required, else warning | The file does not exist or is not a regular file (a FIFO or device is not read). |
+| `context.unreadable` | blocker if required, else warning | The path cannot be resolved (for example a symlink loop or a directory without search permission), or the file cannot be opened or read (for example permission denied). |
 | `context.digest_mismatch` | blocker if required, else warning | The file's SHA-256 differs from the expected digest. |
 | `context.root_unmapped` | blocker if required, else warning | No host mapping was supplied for the reference's root. |
 | `context.unsafe_path` | blocker if required, else warning | The path resolves, through a symlink, outside its root or to a forbidden file (section 6.1). A path that is unsafe as written is a schema error instead. |
@@ -155,10 +156,11 @@ A package is **ready for stage S** when it is schema-valid and has no blocker be
 | `context.not_text` | blocker if required, else warning | An `embed` file is not valid UTF-8 text. |
 | `approval.missing` | blocker for `implementation` and `review` | No current approval for S exists and none is stale. |
 | `approval.stale` | blocker for `implementation` and `review` | No current approval for S exists but an approval for S refers to an older digest. |
-| `content.incomplete` | blocker (a `TODO` objective, every stage; empty `scope` or `acceptance`, `implementation` and `review` only) | The objective is a `TODO` placeholder, or `scope` or `acceptance` is empty. Empty `scope` or `acceptance` is only a warning for `planning`, which is where they get written. |
+| `content.incomplete` | blocker (a `TODO` objective, every stage; empty `scope` or `acceptance`, `implementation` and `review` only) | The objective is a `TODO` placeholder: ignoring surrounding whitespace and letter case, it is `TODO` alone or starts with `TODO:` (as the scaffold's does). Or `scope` or `acceptance` is empty. Empty `scope` or `acceptance` is only a warning for `planning`, which is where they get written. |
 
 `planning` handoffs need no approval.
 A `draft` package is always labelled DRAFT in its output.
+The label states the declared `stage` only; whether a handoff is ready, and which approvals are current, is stated for its target stage.
 `approve` applies the same blockers except the approval ones, so it refuses incomplete content and blocking decisions.
 
 ## 6. Context resolution
@@ -177,13 +179,15 @@ Resolution maps the logical root through the host mapping, resolves symlinks, an
 A path that is unsafe as written (the syntactic rules, or a forbidden name) makes the package schema-invalid.
 A symlink whose target stays inside the root is accepted; one that leaves it, or that points at a forbidden file, is `context.unsafe_path` at resolution time.
 
-Files that commonly hold secrets are refused even when listed: any path component equal to `.git`, `.ssh`, `.aws`, `.gnupg` or `secrets`, and file names matching `.env`, `.env.*`, `.netrc`, `.npmrc`, `.pypirc`, `auth.json`, `credentials*`, `*.pem`, `*.key`, `*.p12`, `id_rsa*` and `id_ed25519*`.
+Files that commonly hold secrets are refused even when listed: any path component equal to `.git`, `.ssh`, `.aws`, `.gnupg` or `secrets`, and file names matching `.env`, `.env.*`, `.netrc`, `.npmrc`, `.pypirc`, `.git-credentials`, `.pgpass`, `auth.json`, `credentials*`, `kubeconfig`, `*.pem`, `*.key`, `*.p12`, `*.pfx`, `id_rsa*`, `id_dsa*`, `id_ecdsa*` and `id_ed25519*` (matched without regard to letter case).
+A host directory mapped as a root is refused as well when its resolved path has a component equal to one of those directory names (section 6.2), so a root cannot expose the rest of such a directory.
 This is a safeguard against mistakes, not a security boundary against a hostile same-user process.
 
 ### 6.2 Host mapping
 
 Supplied per invocation as repeatable `--root NAME=ABSOLUTE_DIR` and/or `--roots-file FILE` (`{"roots": {"NAME": "ABSOLUTE_DIR"}}`).
 The same name given twice is an error.
+Each directory must be absolute and exist; it is resolved through symlinks, and refused when the resolved path lies inside a directory named `.git`, `.ssh`, `.aws`, `.gnupg` or `secrets` (section 6.1).
 A roots file is read like a package: it must be a regular file of at most 65,536 bytes (a FIFO or device is refused without blocking), UTF-8 JSON with no duplicate keys, no `NaN`/`Infinity` and bounded nesting.
 Every such failure is a `roots.invalid` diagnostic and exit status 1.
 A name the package does not declare produces a warning.
@@ -206,6 +210,7 @@ Exceeding one refuses with a diagnostic naming the limit; nothing required is si
 | Completion manifest, when read back | 1,048,576 bytes |
 | Files listed by a completion manifest | 8 |
 
+The rendered-output bound applies to each document that is produced: with `--format md` or `--format json`, the other form is not rendered, and its size cannot refuse the command.
 An optional (`required: false`) reference that exceeds an embed limit is listed as not embedded, with the reason.
 A required reference that exceeds a limit blocks readiness, and `render` produces no output rather than a short one.
 
@@ -379,7 +384,7 @@ Every item is an offline pytest test; none reads production state, credentials o
 | Changing approved content invalidates its approval reference | `test_approval.py::test_changing_covered_content_makes_the_approval_stale`, `test_approval.py::test_changing_uncovered_content_keeps_the_approval_current` |
 | Equivalent content under different host mappings is portable | `test_render.py::test_host_mapping_does_not_change_handoff`, `test_render.py::test_output_is_reproducible` |
 | Evidence can be added without rewriting history | `test_evidence.py`, `test_render.py::test_evidence_changes_only_the_evidence_section`, `test_cli.py::test_full_workflow_from_scaffold_to_ready_handoff` |
-| Malformed input, unsafe paths, overwrites and output limits behave predictably | `test_schema.py` (including malformed URLs), `test_context.py` (symlinks, forbidden files, size limits, host mapping, roots-file duplicate keys, nesting and FIFOs), `test_store.py`, `test_render.py::test_output_limit_refuses_instead_of_truncating`, `test_cli.py::test_render_never_overwrites_without_force` |
+| Malformed input, unsafe paths, overwrites and output limits behave predictably | `test_schema.py` (including malformed URLs), `test_context.py` (symlinks, forbidden files, size limits, host mapping, roots-file duplicate keys, nesting and FIFOs), `test_store.py`, `test_render.py::test_output_limit_refuses_instead_of_truncating`, `test_render.py::test_only_the_requested_format_is_bounded`, `test_cli.py::test_markdown_only_render_is_not_refused_for_the_json_size`, `test_cli.py::test_render_never_overwrites_without_force` |
 | Reads of files that others control are bounded and never block; cleanup touches only files the operation created | `test_store.py::test_reread_during_update_is_bounded_like_the_first_read`, `test_store.py::test_reread_during_update_does_not_block_on_a_fifo`, `test_store.py::test_preexisting_file_at_the_old_temporary_name_survives_an_update`, `test_store.py::test_exhausted_temporary_names_fail_without_deleting_the_colliding_file`, `test_context.py::TestHostMapping` |
 | A handoff bundle is complete only when its manifest verifies; replacement and races never leave a blessed mixture, and a reader uses the bytes it verified | `test_store.py` (publication order, losing races, interrupted replacement, reader rule, `test_a_replacement_while_reading_fails_instead_of_mixing`, `test_read_bundle_returns_the_bytes_it_verified`), `test_cli.py::test_render_publishes_a_bundle_whose_manifest_verifies`, `test_cli.py::test_forced_render_replaces_a_bundle_and_keeps_unrelated_files`, `test_cli.py::test_render_reports_an_interrupted_bundle_and_force_completes_it`, `test_cli.py::test_concurrent_forced_renders_can_both_fail_and_never_verify_a_mixture`, `test_cli.py::test_a_forced_render_whose_bundle_was_replaced_does_not_claim_it` |
 | Replacing a file keeps its permission bits, never special bits; a lock is released only by the update that took it | `test_store.py::test_update_keeps_the_package_file_mode`, `test_store.py::test_replacement_never_copies_special_mode_bits`, `test_store.py::test_forced_bundle_keeps_the_modes_of_the_files_it_replaces`, `test_store.py::test_new_files_follow_the_umask`, `test_store.py::test_a_failed_mode_change_leaves_the_package_and_no_stray_files`, `test_store.py::test_lock_release_removes_only_the_lock_this_update_took` |

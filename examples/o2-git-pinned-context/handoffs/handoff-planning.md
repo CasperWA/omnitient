@@ -2,13 +2,13 @@
 
 **Status: BLOCKED. This is not ready for planning; do not start work from it.**
 
-**DRAFT: the package has not been approved.**
+**DRAFT: the package's declared stage is draft.**
 
 ## 1. Handoff status
 
 - Target stage: planning
 - Package stage: draft
-- Revision (content digest): `010c69e789c30fd3660a3d4fd5ae4e91c205dc8f5227f05aa5e0c4d2b4e4210c`
+- Revision (content digest): `5a8efd0df25e6e7c26095eb19f2d5dc561a79d5b084b02186b66fa1c19bacc68`
 - Approval: not required for a planning handoff
 
 ### Blockers
@@ -127,11 +127,11 @@ Approval records are workflow provenance (who recorded approval of which revisio
 ### Context `contract`
 
 - File: `omnitient:docs/o1-contract.md`
-- Expected SHA-256: `c10c5703c87b23559e944f01e9cf95cb1eefb565c617b1c787a2045a2eedf5f0`
+- Expected SHA-256: `dd27662b67188e0d8c5e3012f791a79adf5fa1204c1116e259f3f93ebec3b7ce`
 - Required: yes; mode: embed
 - Purpose: `The O1 contract this slice extends: section 3.1 defines git provenance and section 6 context resolution.`
 - Git provenance (supplied, not verified): revision `567b1417a4b3a7d24a6487777ef251ca4e386bee`, repository `omnitient`
-- Status: embedded; digest verified; 35849 bytes.
+- Status: embedded; digest verified; 37185 bytes.
 
 ````text
 <!--
@@ -283,7 +283,8 @@ A package is **ready for stage S** when it is schema-valid and has no blocker be
 | Code | Severity | Condition |
 | --- | --- | --- |
 | `decision.unresolved` | blocker | A decision is blocking for S. Other unresolved decisions are listed as warnings. |
-| `context.missing` | blocker if required, else warning | The file does not exist, is not a regular file or cannot be read. |
+| `context.missing` | blocker if required, else warning | The file does not exist or is not a regular file (a FIFO or device is not read). |
+| `context.unreadable` | blocker if required, else warning | The path cannot be resolved (for example a symlink loop or a directory without search permission), or the file cannot be opened or read (for example permission denied). |
 | `context.digest_mismatch` | blocker if required, else warning | The file's SHA-256 differs from the expected digest. |
 | `context.root_unmapped` | blocker if required, else warning | No host mapping was supplied for the reference's root. |
 | `context.unsafe_path` | blocker if required, else warning | The path resolves, through a symlink, outside its root or to a forbidden file (section 6.1). A path that is unsafe as written is a schema error instead. |
@@ -291,10 +292,11 @@ A package is **ready for stage S** when it is schema-valid and has no blocker be
 | `context.not_text` | blocker if required, else warning | An `embed` file is not valid UTF-8 text. |
 | `approval.missing` | blocker for `implementation` and `review` | No current approval for S exists and none is stale. |
 | `approval.stale` | blocker for `implementation` and `review` | No current approval for S exists but an approval for S refers to an older digest. |
-| `content.incomplete` | blocker (a `TODO` objective, every stage; empty `scope` or `acceptance`, `implementation` and `review` only) | The objective is a `TODO` placeholder, or `scope` or `acceptance` is empty. Empty `scope` or `acceptance` is only a warning for `planning`, which is where they get written. |
+| `content.incomplete` | blocker (a `TODO` objective, every stage; empty `scope` or `acceptance`, `implementation` and `review` only) | The objective is a `TODO` placeholder: ignoring surrounding whitespace and letter case, it is `TODO` alone or starts with `TODO:` (as the scaffold's does). Or `scope` or `acceptance` is empty. Empty `scope` or `acceptance` is only a warning for `planning`, which is where they get written. |
 
 `planning` handoffs need no approval.
 A `draft` package is always labelled DRAFT in its output.
+The label states the declared `stage` only; whether a handoff is ready, and which approvals are current, is stated for its target stage.
 `approve` applies the same blockers except the approval ones, so it refuses incomplete content and blocking decisions.
 
 ## 6. Context resolution
@@ -313,13 +315,15 @@ Resolution maps the logical root through the host mapping, resolves symlinks, an
 A path that is unsafe as written (the syntactic rules, or a forbidden name) makes the package schema-invalid.
 A symlink whose target stays inside the root is accepted; one that leaves it, or that points at a forbidden file, is `context.unsafe_path` at resolution time.
 
-Files that commonly hold secrets are refused even when listed: any path component equal to `.git`, `.ssh`, `.aws`, `.gnupg` or `secrets`, and file names matching `.env`, `.env.*`, `.netrc`, `.npmrc`, `.pypirc`, `auth.json`, `credentials*`, `*.pem`, `*.key`, `*.p12`, `id_rsa*` and `id_ed25519*`.
+Files that commonly hold secrets are refused even when listed: any path component equal to `.git`, `.ssh`, `.aws`, `.gnupg` or `secrets`, and file names matching `.env`, `.env.*`, `.netrc`, `.npmrc`, `.pypirc`, `.git-credentials`, `.pgpass`, `auth.json`, `credentials*`, `kubeconfig`, `*.pem`, `*.key`, `*.p12`, `*.pfx`, `id_rsa*`, `id_dsa*`, `id_ecdsa*` and `id_ed25519*` (matched without regard to letter case).
+A host directory mapped as a root is refused as well when its resolved path has a component equal to one of those directory names (section 6.2), so a root cannot expose the rest of such a directory.
 This is a safeguard against mistakes, not a security boundary against a hostile same-user process.
 
 ### 6.2 Host mapping
 
 Supplied per invocation as repeatable `--root NAME=ABSOLUTE_DIR` and/or `--roots-file FILE` (`{"roots": {"NAME": "ABSOLUTE_DIR"}}`).
 The same name given twice is an error.
+Each directory must be absolute and exist; it is resolved through symlinks, and refused when the resolved path lies inside a directory named `.git`, `.ssh`, `.aws`, `.gnupg` or `secrets` (section 6.1).
 A roots file is read like a package: it must be a regular file of at most 65,536 bytes (a FIFO or device is refused without blocking), UTF-8 JSON with no duplicate keys, no `NaN`/`Infinity` and bounded nesting.
 Every such failure is a `roots.invalid` diagnostic and exit status 1.
 A name the package does not declare produces a warning.
@@ -342,6 +346,7 @@ Exceeding one refuses with a diagnostic naming the limit; nothing required is si
 | Completion manifest, when read back | 1,048,576 bytes |
 | Files listed by a completion manifest | 8 |
 
+The rendered-output bound applies to each document that is produced: with `--format md` or `--format json`, the other form is not rendered, and its size cannot refuse the command.
 An optional (`required: false`) reference that exceeds an embed limit is listed as not embedded, with the reason.
 A required reference that exceeds a limit blocks readiness, and `render` produces no output rather than a short one.
 
@@ -515,7 +520,7 @@ Every item is an offline pytest test; none reads production state, credentials o
 | Changing approved content invalidates its approval reference | `test_approval.py::test_changing_covered_content_makes_the_approval_stale`, `test_approval.py::test_changing_uncovered_content_keeps_the_approval_current` |
 | Equivalent content under different host mappings is portable | `test_render.py::test_host_mapping_does_not_change_handoff`, `test_render.py::test_output_is_reproducible` |
 | Evidence can be added without rewriting history | `test_evidence.py`, `test_render.py::test_evidence_changes_only_the_evidence_section`, `test_cli.py::test_full_workflow_from_scaffold_to_ready_handoff` |
-| Malformed input, unsafe paths, overwrites and output limits behave predictably | `test_schema.py` (including malformed URLs), `test_context.py` (symlinks, forbidden files, size limits, host mapping, roots-file duplicate keys, nesting and FIFOs), `test_store.py`, `test_render.py::test_output_limit_refuses_instead_of_truncating`, `test_cli.py::test_render_never_overwrites_without_force` |
+| Malformed input, unsafe paths, overwrites and output limits behave predictably | `test_schema.py` (including malformed URLs), `test_context.py` (symlinks, forbidden files, size limits, host mapping, roots-file duplicate keys, nesting and FIFOs), `test_store.py`, `test_render.py::test_output_limit_refuses_instead_of_truncating`, `test_render.py::test_only_the_requested_format_is_bounded`, `test_cli.py::test_markdown_only_render_is_not_refused_for_the_json_size`, `test_cli.py::test_render_never_overwrites_without_force` |
 | Reads of files that others control are bounded and never block; cleanup touches only files the operation created | `test_store.py::test_reread_during_update_is_bounded_like_the_first_read`, `test_store.py::test_reread_during_update_does_not_block_on_a_fifo`, `test_store.py::test_preexisting_file_at_the_old_temporary_name_survives_an_update`, `test_store.py::test_exhausted_temporary_names_fail_without_deleting_the_colliding_file`, `test_context.py::TestHostMapping` |
 | A handoff bundle is complete only when its manifest verifies; replacement and races never leave a blessed mixture, and a reader uses the bytes it verified | `test_store.py` (publication order, losing races, interrupted replacement, reader rule, `test_a_replacement_while_reading_fails_instead_of_mixing`, `test_read_bundle_returns_the_bytes_it_verified`), `test_cli.py::test_render_publishes_a_bundle_whose_manifest_verifies`, `test_cli.py::test_forced_render_replaces_a_bundle_and_keeps_unrelated_files`, `test_cli.py::test_render_reports_an_interrupted_bundle_and_force_completes_it`, `test_cli.py::test_concurrent_forced_renders_can_both_fail_and_never_verify_a_mixture`, `test_cli.py::test_a_forced_render_whose_bundle_was_replaced_does_not_claim_it` |
 | Replacing a file keeps its permission bits, never special bits; a lock is released only by the update that took it | `test_store.py::test_update_keeps_the_package_file_mode`, `test_store.py::test_replacement_never_copies_special_mode_bits`, `test_store.py::test_forced_bundle_keeps_the_modes_of_the_files_it_replaces`, `test_store.py::test_new_files_follow_the_umask`, `test_store.py::test_a_failed_mode_change_leaves_the_package_and_no_stray_files`, `test_store.py::test_lock_release_removes_only_the_lock_this_update_took` |
@@ -536,11 +541,11 @@ Free-threaded and JIT builds, Windows and macOS, and other implementations were 
 ### Context `context-module`
 
 - File: `omnitient:src/omnitient/context.py`
-- Expected SHA-256: `8c4c7d15c16877212c1082696b671a1fb5ad0c705fe85637191bbc59a990b537`
+- Expected SHA-256: `2f46d3dd01b3a8c999449af45317a177fe6bc82364c6e95e3cee71f9bfc30250`
 - Required: yes; mode: embed
 - Purpose: `Where context resolution lives; verification of a pinned revision would hook in here.`
 - Git provenance (supplied, not verified): revision `567b1417a4b3a7d24a6487777ef251ca4e386bee`, repository `omnitient`
-- Status: embedded; digest verified; 9307 bytes.
+- Status: embedded; digest verified; 9573 bytes.
 
 ````text
 # SPDX-FileCopyrightText: 2026 Casper Welzel Andersen
@@ -648,6 +653,12 @@ def build_host_mapping(
         if not real.is_dir():
             raise refusal(
                 "roots.invalid", f"root {name!r}: {directory!r} is not a directory"
+            )
+        if found := rules.forbidden_directory(real.parts):
+            raise refusal(
+                "roots.invalid",
+                f"root {name!r}: {directory!r} is inside a {found!r} directory, "
+                "which is never used for context",
             )
         resolved[name] = real
     return HostMapping(resolved)
@@ -812,11 +823,11 @@ def digest_file(
 ### Context `readiness-module`
 
 - File: `omnitient:src/omnitient/readiness.py`
-- Expected SHA-256: `be26fece6229c22bc655fd5249f4568692175066ce8e571a2d7e22be92589022`
+- Expected SHA-256: `ea16fb20d0315463fbb89f42f35eaa557a1f5a5cce03b6953ccc870364dd703a`
 - Required: no; mode: embed
 - Purpose: `Where any new readiness diagnostics would be added.`
 - Git provenance (supplied, not verified): revision `567b1417a4b3a7d24a6487777ef251ca4e386bee`, repository `omnitient`
-- Status: embedded; digest verified; 4191 bytes.
+- Status: embedded; digest verified; 4401 bytes.
 
 ````text
 # SPDX-FileCopyrightText: 2026 Casper Welzel Andersen
@@ -828,6 +839,7 @@ def digest_file(
 
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 
@@ -841,6 +853,10 @@ from omnitient.model import (
     stage_rank,
 )
 from omnitient.serialize import content_digest
+
+# A placeholder objective is ``TODO`` alone or ``TODO:`` and a note, in any
+# letter case; "TODOs in X" and "Todoist" are real objectives.
+_TODO_PLACEHOLDER = re.compile(r"TODO(?::|$)", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -902,7 +918,7 @@ def evaluate(
         )
         (blockers if required else warnings).append(diag)
 
-    if pkg.objective.strip().upper().startswith("TODO"):
+    if _TODO_PLACEHOLDER.match(pkg.objective.strip()):
         blockers.append(
             Diagnostic(
                 "content.incomplete", "blocker", "objective is a TODO placeholder"
@@ -957,7 +973,7 @@ def evaluate_all(
 ## 11. Provenance
 
 - Package: `omnitient/provenance/o2-git-pinned-context`
-- Revision: `010c69e789c30fd3660a3d4fd5ae4e91c205dc8f5227f05aa5e0c4d2b4e4210c`
+- Revision: `5a8efd0df25e6e7c26095eb19f2d5dc561a79d5b084b02186b66fa1c19bacc68`
 - Package schema: `omnitient/work-package` version 1
 - Handoff schema: `omnitient/handoff` version 1
 - This document contains no generation time and no host paths; identical inputs give identical output.
