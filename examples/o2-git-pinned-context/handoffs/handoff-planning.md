@@ -8,7 +8,7 @@
 
 - Target stage: planning
 - Package stage: draft
-- Revision (content digest): `5a8efd0df25e6e7c26095eb19f2d5dc561a79d5b084b02186b66fa1c19bacc68`
+- Revision (content digest): `d113a98cf739358daddded5b110ba9cc3f7b89b230c3045d985c80d945f7eb74`
 - Approval: not required for a planning handoff
 
 ### Blockers
@@ -127,11 +127,11 @@ Approval records are workflow provenance (who recorded approval of which revisio
 ### Context `contract`
 
 - File: `omnitient:docs/o1-contract.md`
-- Expected SHA-256: `dd27662b67188e0d8c5e3012f791a79adf5fa1204c1116e259f3f93ebec3b7ce`
+- Expected SHA-256: `afab2bcb5f8242ecb55dbcf51cfeb16112ce2901db22cae6a042cea1585df9bd`
 - Required: yes; mode: embed
 - Purpose: `The O1 contract this slice extends: section 3.1 defines git provenance and section 6 context resolution.`
 - Git provenance (supplied, not verified): revision `567b1417a4b3a7d24a6487777ef251ca4e386bee`, repository `omnitient`
-- Status: embedded; digest verified; 37185 bytes.
+- Status: embedded; digest verified; 37470 bytes.
 
 ````text
 <!--
@@ -534,7 +534,9 @@ Every item is an offline pytest test; none reads production state, credentials o
 
 `requires-python = ">=3.12"`, with no upper bound. Development and tooling baseline 3.12.
 
-Supported means allowed by the metadata. Tested means the full suite, including the installed-wheel test, passed: CPython 3.12.15, 3.13.16, 3.14.4 and 3.15.0, standard GIL builds on Linux (x86-64).
+Supported means allowed by the metadata. Tested means the full suite, including the installed-wheel test, passed on standard GIL builds on Linux (x86-64).
+CI does that for every pull request on CPython 3.12, 3.13, 3.14 and 3.15 as `actions/setup-python` provides them, and each run's log records the exact versions (run 39587221044: 3.12.15, 3.13.16, 3.14.8 and 3.15.0).
+Before CI, the same checks passed locally on 3.12.15, 3.13.16, 3.14.4 (from the Linux distribution) and 3.15.0.
 Free-threaded and JIT builds, Windows and macOS, and other implementations were not verified, and the runtime has no dependencies to check beyond the standard library.
 ````
 
@@ -973,7 +975,7 @@ def evaluate_all(
 ## 11. Provenance
 
 - Package: `omnitient/provenance/o2-git-pinned-context`
-- Revision: `5a8efd0df25e6e7c26095eb19f2d5dc561a79d5b084b02186b66fa1c19bacc68`
+- Revision: `d113a98cf739358daddded5b110ba9cc3f7b89b230c3045d985c80d945f7eb74`
 - Package schema: `omnitient/work-package` version 1
 - Handoff schema: `omnitient/handoff` version 1
 - This document contains no generation time and no host paths; identical inputs give identical output.

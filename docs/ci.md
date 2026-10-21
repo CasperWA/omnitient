@@ -12,7 +12,7 @@ It has no secrets, no deployment, no package publication and no write access to 
 
 | Job | Python | What runs |
 | --- | --- | --- |
-| `Format, lint, types and docs` | 3.12 | `pre-commit run --all-files`, without the pytest hook |
+| `Format, lint, types and docs` | 3.12 | `pre-commit run --all-files`, without the pytest hooks |
 | `Tests` (matrix) | 3.12, 3.13, 3.14, 3.15 | `pre-commit run pytest --all-files`, then `pre-commit run pytest-packaging --all-files --hook-stage manual` |
 
 The matrix has `fail-fast: false`, so every interpreter reports its own result, and `max-parallel: 2`.
@@ -36,7 +36,7 @@ The jobs choose their runner from the repository's visibility.
 
 | Repository | `runs-on` | Pull requests |
 | --- | --- | --- |
-| Private | `self-hosted`, `Linux`, `X64`, `sintef-desktop-cwa` | Only from this repository; a fork's pull request skips the jobs |
+| Private | `self-hosted`, `Linux`, `X64`, `sintef-desktop-cwa` | Only from this repository; a fork's pull request skips the jobs, and so does a run that Dependabot triggers |
 | Public | `ubuntu-24.04` (GitHub-hosted) | All |
 
 The private selector is four labels, so it is neither bare `self-hosted` nor the custom `ubuntu-latest` label that the repository's two runners also carry.
@@ -57,6 +57,16 @@ A workflow condition is not an isolation boundary.
 Anyone who can change a workflow in this repository can point it at an attached runner, and can run arbitrary code there.
 The same-repository condition only keeps pull requests from forks out of the private pool.
 Treat everyone with write access as able to run code on the runner, and keep nothing on it that they should not reach.
+
+### Dependabot while the repository is private
+
+Dependabot's pull requests come from branches in this repository, so the same-repository condition alone would run them on the attached runners, which run jobs as user id 0 with `docker` available.
+By the owner's decision, the jobs are also skipped on the private path when the run was triggered by `dependabot[bot]` (`github.triggering_actor`).
+A Dependabot pull request therefore gets no checks when it is opened or rebased, which is not test evidence.
+To test it, a person reviews the change and re-runs the workflow, or pushes to the branch; that run's triggering actor is the person, so the jobs run.
+This gate has not been exercised yet: Dependabot starts only once its configuration is on `main`.
+It is no protection against the moving tags and version ranges that every run resolves (see "Permissions and credentials" and `pyproject.toml`); it only keeps Dependabot's out-of-range updates from running before a person has looked at them.
+On the public path, Dependabot's pull requests run on GitHub-hosted runners like any other.
 
 The runner process itself is persistent and not sandboxed.
 
@@ -80,12 +90,20 @@ What is downloaded, and where it goes:
 | --- | --- | --- |
 | The two actions | GitHub | the runner's action cache |
 | CPython, when the runner's tool cache lacks that version | `github.com/actions/python-versions` releases | the runner's tool cache (`RUNNER_TOOL_CACHE`), **persistent** and shared by later jobs on that runner |
-| Python packages for `.[dev]` and the build requirement | the default package index | the job's virtual environment and pip cache, in scratch |
+| Python packages for `.[dev]` and the build requirement | the package index pip is configured to use (see below) | the job's virtual environment and pip cache, in scratch |
 | In the `checks` job: hook repositories and their tools (Black, Ruff, mypy, Bandit, pyupgrade, blacken-docs, REUSE lint, markdownlint-cli2 and its Node runtime, actionlint and a Go toolchain if the machine has none) | GitHub, the package indexes, `go.dev`, `nodejs.org` | the job's `PRE_COMMIT_HOME`, in scratch |
 | In the test jobs: the manifests of the hook repositories (no tools) | GitHub | the job's `PRE_COMMIT_HOME`, in scratch |
 
-The only persistent write outside the job's own directories is the interpreter in the tool cache.
-Nothing deletes it.
+Writes that outlive a job on a self-hosted runner:
+
+- the interpreter in the tool cache, which nothing deletes;
+- the checkout in the runner's work directory, which the next job's checkout resets with `git clean -ffdx` (visible in its log) but which stays on disk between jobs;
+- pytest's temporary directories, by inference: the workflow does not set `TMPDIR`, so pytest's base temporary directory (used by the tests and by the installed-wheel test for its wheel and virtual environment) is under the system temporary directory, where pytest keeps the last three sessions per user.
+
+`PIP_CONFIG_FILE=/dev/null` makes pip ignore the machine's configuration files.
+It does not clear `PIP_*` environment variables, so an index URL set in the runner service's environment would still apply.
+None was in effect in run [39587221044](https://github.com/CasperWA/omnitient/actions/runs/39587221044): pip prints "Looking in indexes" or "Looking in links" when a non-default index or link is configured, and its log shows neither.
+The runner's environment is the owner's to keep that way.
 
 The scratch directory is `$RUNNER_TEMP/omnitient-ci.XXXXXX`, created with a random suffix and an owner marker naming the run, attempt, job and matrix entry.
 Cleanup removes it only if it is a plain directory directly inside `RUNNER_TEMP`, has that name, is owned by the running user and carries this job's marker.

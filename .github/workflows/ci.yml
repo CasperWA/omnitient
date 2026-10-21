@@ -7,7 +7,8 @@
 # download behaviour and the steps for making the repository public.
 #
 # While the repository is private, jobs run on this repository's own
-# self-hosted runners and only for pull requests from this repository.
+# self-hosted runners and only for pull requests from this repository, and
+# not for runs that Dependabot triggers (a person can re-run those).
 # While it is public, they run on a GitHub-hosted image instead.
 # Both paths provision Python with actions/setup-python and are otherwise identical.
 
@@ -26,8 +27,9 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
-  # Ignore any pip configuration of the machine; the job installs from the
-  # default index into a job-local environment.
+  # Ignore the machine's pip configuration files; the job installs into a
+  # job-local environment. PIP_* variables of the runner service would still
+  # apply; see docs/ci.md.
   PIP_CONFIG_FILE: /dev/null
   PIP_DISABLE_PIP_VERSION_CHECK: "1"
   PIP_NO_INPUT: "1"
@@ -37,10 +39,13 @@ jobs:
     name: Format, lint, types and docs (Python 3.12)
     # A skipped job is not a pass: pull requests from forks of a private
     # repository get no checks at all, and nothing here says otherwise.
+    # Neither do runs that Dependabot triggers while the repository is
+    # private, until a person re-runs them (docs/ci.md).
     if: >-
       !github.event.repository.private ||
       github.event_name != 'pull_request' ||
-      github.event.pull_request.head.repo.full_name == github.repository
+      (github.event.pull_request.head.repo.full_name == github.repository &&
+      github.triggering_actor != 'dependabot[bot]')
     # Private: this repository's runners, selected by four labels. Not bare
     # `self-hosted`, and not the custom `ubuntu-latest` label that those
     # runners also carry. Public: a fixed GitHub-hosted image, never
@@ -97,7 +102,7 @@ jobs:
       # The pytest hooks run in the test jobs, once per interpreter.
       - name: Run the pre-commit checks
         env:
-          SKIP: pytest
+          SKIP: pytest,pytest-example
         run: pre-commit run --all-files --show-diff-on-failure
 
       - name: Remove the job's scratch directory
@@ -109,7 +114,8 @@ jobs:
     if: >-
       !github.event.repository.private ||
       github.event_name != 'pull_request' ||
-      github.event.pull_request.head.repo.full_name == github.repository
+      (github.event.pull_request.head.repo.full_name == github.repository &&
+      github.triggering_actor != 'dependabot[bot]')
     runs-on: ${{ github.event.repository.private && fromJSON('["self-hosted","Linux","X64","sintef-desktop-cwa"]') || 'ubuntu-24.04' }}
     timeout-minutes: 20
     strategy:

@@ -120,6 +120,16 @@ repos:
         pass_filenames: false
         files: ^(src|tests)/.*\.py$
 
+      # The example pins the contract and two modules (examples/README.md).
+      # A commit that changes only the contract or the example skips the hook
+      # above, so this runs just the example's test for those files.
+      - id: pytest-example
+        name: pytest (pinned example)
+        entry: python -m pytest -q --no-cov tests/test_example.py
+        language: system
+        pass_filenames: false
+        files: ^(docs/o1-contract\.md|examples/.*)$
+
       # Builds a wheel, installs it into a throwaway virtualenv and runs the
       # console script outside the source tree. Offline, but slower.
       - id: pytest-packaging

@@ -398,5 +398,7 @@ Every item is an offline pytest test; none reads production state, credentials o
 
 `requires-python = ">=3.12"`, with no upper bound. Development and tooling baseline 3.12.
 
-Supported means allowed by the metadata. Tested means the full suite, including the installed-wheel test, passed: CPython 3.12.15, 3.13.16, 3.14.4 and 3.15.0, standard GIL builds on Linux (x86-64).
+Supported means allowed by the metadata. Tested means the full suite, including the installed-wheel test, passed on standard GIL builds on Linux (x86-64).
+CI does that for every pull request on CPython 3.12, 3.13, 3.14 and 3.15 as `actions/setup-python` provides them, and each run's log records the exact versions (run 39587221044: 3.12.15, 3.13.16, 3.14.8 and 3.15.0).
+Before CI, the same checks passed locally on 3.12.15, 3.13.16, 3.14.4 (from the Linux distribution) and 3.15.0.
 Free-threaded and JIT builds, Windows and macOS, and other implementations were not verified, and the runtime has no dependencies to check beyond the standard library.

@@ -39,7 +39,7 @@ pre-commit run --all-files --hook-stage manual   # also the installed-wheel test
 | Notices | REUSE lint (`fsfe/reuse-tool`): every file has a license and copyright notice, in the file or in `REUSE.toml` |
 | Workflows | actionlint (GitHub Actions workflow files) |
 | Files | pre-commit-hooks (JSON, TOML, YAML, whitespace, large files, private keys, test naming) |
-| Tests | pytest: unit tests on commit, the installed-wheel test in the manual stage |
+| Tests | pytest: unit tests on commit, the installed-wheel test in the manual stage, and the example's test alone when a commit changes only the contract or the example |
 
 Black, Ruff, mypy and Bandit are intentionally not in the `dev` extra.
 Their versions are pinned once, in `.pre-commit-config.yaml`.
@@ -64,8 +64,9 @@ It needs `flit_core`, which the `dev` extra installs.
 The render tests parse every handoff with `markdown-it-py` (a CommonMark parser, installed by the `dev` extra) to check that author text cannot change the document's structure; it is a test dependency only.
 Tests that could block, such as opening a FIFO, run the command in a child process with a timeout, so a regression fails the test instead of hanging the run.
 
-Tested versions: 3.12.15 (the development environment), 3.13.16, 3.14.4 and 3.15.0.
-All four ran the full suite and the installed-wheel test; the lint, format and type hooks stay on 3.12.
+CI runs the full suite and the installed-wheel test on Python 3.12, 3.13, 3.14 and 3.15 as `actions/setup-python` provides them; each run's log records the exact versions (run 39587221044: 3.12.15, 3.13.16, 3.14.8 and 3.15.0).
+Before CI, the same checks passed locally on 3.12.15 (the development environment), 3.13.16, 3.14.4 from the Linux distribution and 3.15.0.
+The lint, format and type hooks stay on 3.12.
 Only one interpreter is needed to use or develop Omnitient.
 
 To try another interpreter, create a disposable environment outside the repository and install the same test dependencies.
@@ -73,9 +74,11 @@ Create it with `uv venv --seed` as below.
 Where an interpreter lacks `ensurepip` (for example a distribution Python without its `-venv` package, which was the case for 3.13 and 3.15 here), `uv venv` still works for an installed interpreter; `virtualenv -p /usr/bin/python3.15 PATH` also works, as does `mkvirtualenv`, but upgrade `pip` afterwards because the bundled seed can be older.
 To run the pytest hooks under that interpreter, put its `bin` first on a `PATH` without unusual entries, install `pre-commit` there as well, and run `pre-commit run pytest --all-files` and `pre-commit run pytest-packaging --all-files --hook-stage manual`; check the printed interpreter in the coverage banner.
 
+Install the `flit_core` range that `pyproject.toml` declares: with `--no-build-isolation`, pip builds with whatever `flit_core` is installed and does not check it against the build requirement.
+
 ```bash
 uv venv --python /usr/bin/python3.14 --no-python-downloads --seed /tmp/omnitient-py314
-/tmp/omnitient-py314/bin/python -m pip install "pytest~=9.1" "pytest-cov~=7.1" "flit_core>=3.4,<4" "markdown-it-py~=4.2"
+/tmp/omnitient-py314/bin/python -m pip install "pytest~=9.1" "pytest-cov~=7.1" "flit_core>=4.1,<5" "markdown-it-py~=4.2"
 /tmp/omnitient-py314/bin/python -m pip install --no-build-isolation -e .
 /tmp/omnitient-py314/bin/python -m pytest
 ```

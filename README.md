@@ -23,7 +23,7 @@ Pre-release, slice O1.
 The behaviour is specified in [docs/o1-contract.md](docs/o1-contract.md).
 
 Supported Python: 3.12 or newer (`requires-python = ">=3.12"`).
-Tested: CPython 3.12.15 (development baseline), 3.13.16, 3.14.4 and 3.15.0, standard GIL builds from the Linux distribution, on Linux only.
+Tested: CPython 3.12, 3.13, 3.14 and 3.15 in CI, standard GIL builds from `actions/setup-python` (for example 3.12.15, 3.13.16, 3.14.8 and 3.15.0), on Linux only; 3.12.15 is the development baseline.
 Free-threaded and JIT builds, other platforms (including Windows) and other implementations are not verified.
 You need only one supported interpreter to use Omnitient; the other versions matter only if you want to reproduce the compatibility checks (see [docs/development.md](docs/development.md)).
 
