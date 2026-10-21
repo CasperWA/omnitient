@@ -1,3 +1,8 @@
+# SPDX-FileCopyrightText: 2026 Casper Welzel Andersen
+# SPDX-FileCopyrightText: 2026 SINTEF Ocean AS
+#
+# SPDX-License-Identifier: MIT
+
 """Strict parsing and validation of work-package JSON.
 
 ``parse_package`` collects every problem it finds instead of stopping at the

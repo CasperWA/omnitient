@@ -1,3 +1,10 @@
+<!--
+SPDX-FileCopyrightText: 2026 Casper Welzel Andersen
+SPDX-FileCopyrightText: 2026 SINTEF Ocean AS
+
+SPDX-License-Identifier: MIT
+-->
+
 # Omnitient
 
 Omnitient prepares portable work packages and self-contained agent handoffs.
@@ -20,7 +27,14 @@ Tested: CPython 3.12.15 (development baseline), 3.13.16, 3.14.4 and 3.15.0, stan
 Free-threaded and JIT builds, other platforms (including Windows) and other implementations are not verified.
 You need only one supported interpreter to use Omnitient; the other versions matter only if you want to reproduce the compatibility checks (see [docs/development.md](docs/development.md)).
 
-No license has been chosen yet, so none is declared.
+## License
+
+Omnitient is released under the [MIT License](LICENSE), which permits commercial use, modification and resale.
+Copyright (c) 2026 Casper Welzel Andersen and SINTEF Ocean AS.
+
+Source files carry SPDX notices.
+Files that cannot carry one, such as strict JSON, are covered by `REUSE.toml`, and the packaged JSON Schema by a companion `.license` file so the notice travels with the wheel.
+Handoffs that `omnitient render` generates carry no notice: they embed whatever context a package lists, and Omnitient makes no claim about who owns or licenses that content.
 
 ## Set up for development
 

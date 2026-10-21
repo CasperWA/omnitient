@@ -1,3 +1,8 @@
+# SPDX-FileCopyrightText: 2026 Casper Welzel Andersen
+# SPDX-FileCopyrightText: 2026 SINTEF Ocean AS
+#
+# SPDX-License-Identifier: MIT
+
 """CLI behaviour: exit codes, no-clobber writes, read-only reads, full workflow."""
 
 from __future__ import annotations

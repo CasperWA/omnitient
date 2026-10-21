@@ -1,3 +1,10 @@
+<!--
+SPDX-FileCopyrightText: 2026 Casper Welzel Andersen
+SPDX-FileCopyrightText: 2026 SINTEF Ocean AS
+
+SPDX-License-Identifier: MIT
+-->
+
 # Agent guide
 
 Omnitient is a small, local, deterministic CLI and library with no runtime dependencies.

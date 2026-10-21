@@ -1,3 +1,8 @@
+# SPDX-FileCopyrightText: 2026 Casper Welzel Andersen
+# SPDX-FileCopyrightText: 2026 SINTEF Ocean AS
+#
+# SPDX-License-Identifier: MIT
+
 """Pure package transformations: scaffold, approve, add evidence, edit context.
 
 Each function returns a new package.

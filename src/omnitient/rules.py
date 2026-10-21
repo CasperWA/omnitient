@@ -1,3 +1,8 @@
+# SPDX-FileCopyrightText: 2026 Casper Welzel Andersen
+# SPDX-FileCopyrightText: 2026 SINTEF Ocean AS
+#
+# SPDX-License-Identifier: MIT
+
 """Small, pure validation rules shared by the schema, context and ops layers."""
 
 from __future__ import annotations

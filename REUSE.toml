@@ -1,0 +1,40 @@
+# SPDX-FileCopyrightText: 2026 Casper Welzel Andersen
+# SPDX-FileCopyrightText: 2026 SINTEF Ocean AS
+#
+# SPDX-License-Identifier: MIT
+
+version = 1
+
+# Files whose format cannot carry a comment, or whose bytes are generated and
+# compared exactly, are covered here instead of by an in-file notice.
+# The packaged JSON Schema has a companion `.license` file because it ships in
+# the wheel, where this mapping does not.
+
+[[annotations]]
+path = [
+  "LICENSE",
+  ".github/PULL_REQUEST_TEMPLATE.md",
+  "examples/o2-git-pinned-context/work-package.json",
+]
+precedence = "closest"
+SPDX-FileCopyrightText = [
+  "2026 Casper Welzel Andersen",
+  "2026 SINTEF Ocean AS",
+]
+SPDX-License-Identifier = "MIT"
+
+# The committed planning handoff is generated from the example work package and
+# embeds only three first-party files of this repository (the O1 contract,
+# `context.py` and `readiness.py`), so the same notice applies.
+# This is specific to this example: a handoff generated from other packages
+# embeds whatever context those packages list, carries no notice and makes no
+# claim about who owns that context.
+
+[[annotations]]
+path = "examples/o2-git-pinned-context/handoffs/**"
+precedence = "closest"
+SPDX-FileCopyrightText = [
+  "2026 Casper Welzel Andersen",
+  "2026 SINTEF Ocean AS",
+]
+SPDX-License-Identifier = "MIT"

@@ -1,3 +1,8 @@
+# SPDX-FileCopyrightText: 2026 Casper Welzel Andersen
+# SPDX-FileCopyrightText: 2026 SINTEF Ocean AS
+#
+# SPDX-License-Identifier: MIT
+
 """The built wheel installs and works outside the source tree (offline)."""
 
 from __future__ import annotations
@@ -89,6 +94,10 @@ def test_wheel_contents(installed: tuple[Path, Path]) -> None:
         )
     assert "omnitient/data/work-package.schema.json" in names
     assert "omnitient/cli.py" in names
+    assert "omnitient/data/work-package.schema.json.license" in names
+    for licence in ("LICENSE", "LICENSES/MIT.txt"):
+        assert any(n.endswith(f".dist-info/licenses/{licence}") for n in names)
+    assert "License-Expression: MIT" in metadata
     assert not any(n.startswith(("tests/", "docs/")) for n in names)
     assert "Requires-Python: >=3.12" in metadata
     requires = [

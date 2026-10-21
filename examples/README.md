@@ -1,3 +1,10 @@
+<!--
+SPDX-FileCopyrightText: 2026 Casper Welzel Andersen
+SPDX-FileCopyrightText: 2026 SINTEF Ocean AS
+
+SPDX-License-Identifier: MIT
+-->
+
 # Examples
 
 ## o2-git-pinned-context

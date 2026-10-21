@@ -1,3 +1,8 @@
+# SPDX-FileCopyrightText: 2026 Casper Welzel Andersen
+# SPDX-FileCopyrightText: 2026 SINTEF Ocean AS
+#
+# SPDX-License-Identifier: MIT
+
 """File persistence: bounded reads, exclusive creation, checked updates and bundles.
 
 Cleanup removes only files this operation created, recognised by device and

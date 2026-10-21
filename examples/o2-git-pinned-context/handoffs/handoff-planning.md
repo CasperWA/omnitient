@@ -8,7 +8,7 @@
 
 - Target stage: planning
 - Package stage: draft
-- Revision (content digest): `ddad24acb30c13c0bed6774a07ca392f39b0c16aa568573d77594ab4eacd1f0a`
+- Revision (content digest): `e215b2ffe9ffaf6488c76d193515fa62673938ea36612d91316b5ddab1539cae`
 - Approval: not required for a planning handoff
 
 ### Blockers
@@ -127,13 +127,20 @@ Approval records are workflow provenance (who recorded approval of which revisio
 ### Context `contract`
 
 - File: `omnitient:docs/o1-contract.md`
-- Expected SHA-256: `28a61faaf28846674ff49e192b281ebd640e2f69dea9f05cb22213767e7829f8`
+- Expected SHA-256: `20565c22f75f7ecd7ba44001a7828b0b3ea543d524260ac388c2caee757b773e`
 - Required: yes; mode: embed
 - Purpose: `The O1 contract this slice extends: section 3.1 defines git provenance and section 6 context resolution.`
 - Git provenance (supplied, not verified): revision `e3ce6ef8a7db91ce2dde732f8da5203bdf00614e`, repository `omnitient`
-- Status: embedded; digest verified; 32688 bytes.
+- Status: embedded; digest verified; 32825 bytes.
 
 ````text
+<!--
+SPDX-FileCopyrightText: 2026 Casper Welzel Andersen
+SPDX-FileCopyrightText: 2026 SINTEF Ocean AS
+
+SPDX-License-Identifier: MIT
+-->
+
 # Omnitient O1 contract and acceptance plan
 
 Status: implemented by the O1 slice. This document is the specification the code and tests follow.
@@ -511,13 +518,18 @@ Free-threaded and JIT builds, Windows and macOS, and other implementations were 
 ### Context `context-module`
 
 - File: `omnitient:src/omnitient/context.py`
-- Expected SHA-256: `366282c98a80d93d1f3798e7c2d73639708a32d514248f7307b00a3bd16957b6`
+- Expected SHA-256: `8c4c7d15c16877212c1082696b671a1fb5ad0c705fe85637191bbc59a990b537`
 - Required: yes; mode: embed
 - Purpose: `Where context resolution lives; verification of a pinned revision would hook in here.`
 - Git provenance (supplied, not verified): revision `17717c40f1a38aa6dbb7f7c82bd78b49bbb905ae`, repository `omnitient`
-- Status: embedded; digest verified; 9172 bytes.
+- Status: embedded; digest verified; 9307 bytes.
 
 ````text
+# SPDX-FileCopyrightText: 2026 Casper Welzel Andersen
+# SPDX-FileCopyrightText: 2026 SINTEF Ocean AS
+#
+# SPDX-License-Identifier: MIT
+
 """Host mapping and safe, bounded resolution of explicitly listed context files."""
 
 from __future__ import annotations
@@ -782,13 +794,18 @@ def digest_file(
 ### Context `readiness-module`
 
 - File: `omnitient:src/omnitient/readiness.py`
-- Expected SHA-256: `eac356482d3c84195046e159fd3aff88f1e9760ba561ec9225c32f7888809a81`
+- Expected SHA-256: `be26fece6229c22bc655fd5249f4568692175066ce8e571a2d7e22be92589022`
 - Required: no; mode: embed
 - Purpose: `Where any new readiness diagnostics would be added.`
 - Git provenance (supplied, not verified): revision `b7af9941255fb512fa2d774e8d57c69ffbc249b9`, repository `omnitient`
-- Status: embedded; digest verified; 4056 bytes.
+- Status: embedded; digest verified; 4191 bytes.
 
 ````text
+# SPDX-FileCopyrightText: 2026 Casper Welzel Andersen
+# SPDX-FileCopyrightText: 2026 SINTEF Ocean AS
+#
+# SPDX-License-Identifier: MIT
+
 """Readiness of a package for a handoff stage (docs/o1-contract.md, section 5)."""
 
 from __future__ import annotations
@@ -922,7 +939,7 @@ def evaluate_all(
 ## 11. Provenance
 
 - Package: `omnitient/provenance/o2-git-pinned-context`
-- Revision: `ddad24acb30c13c0bed6774a07ca392f39b0c16aa568573d77594ab4eacd1f0a`
+- Revision: `e215b2ffe9ffaf6488c76d193515fa62673938ea36612d91316b5ddab1539cae`
 - Package schema: `omnitient/work-package` version 1
 - Handoff schema: `omnitient/handoff` version 1
 - This document contains no generation time and no host paths; identical inputs give identical output.

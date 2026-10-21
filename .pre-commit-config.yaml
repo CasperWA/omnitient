@@ -1,3 +1,8 @@
+# SPDX-FileCopyrightText: 2026 Casper Welzel Andersen
+# SPDX-FileCopyrightText: 2026 SINTEF Ocean AS
+#
+# SPDX-License-Identifier: MIT
+
 # Shared development-check entry point.
 #
 #   pre-commit run --all-files                       # everything that runs on commit
@@ -35,6 +40,12 @@ repos:
         args: ["--pytest-test-first"]
       - id: trailing-whitespace
         args: ["--markdown-linebreak-ext=md"]
+
+  # License and copyright notices on every file (REUSE specification).
+  - repo: https://github.com/fsfe/reuse-tool
+    rev: v6.2.0
+    hooks:
+      - id: reuse
 
   - repo: https://github.com/asottile/pyupgrade
     rev: v3.22.0

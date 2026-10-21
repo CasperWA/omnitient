@@ -1,3 +1,8 @@
+# SPDX-FileCopyrightText: 2026 Casper Welzel Andersen
+# SPDX-FileCopyrightText: 2026 SINTEF Ocean AS
+#
+# SPDX-License-Identifier: MIT
+
 """Fixed input and output bounds (see docs/o1-contract.md, section 7).
 
 Exceeding a bound refuses with a diagnostic; nothing required is truncated.

@@ -1,3 +1,8 @@
+# SPDX-FileCopyrightText: 2026 Casper Welzel Andersen
+# SPDX-FileCopyrightText: 2026 SINTEF Ocean AS
+#
+# SPDX-License-Identifier: MIT
+
 """Deterministic Markdown and JSON handoffs (docs/o1-contract.md, section 8).
 
 Nothing here touches the filesystem, the clock or the environment, so the

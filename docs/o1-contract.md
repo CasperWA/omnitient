@@ -1,3 +1,10 @@
+<!--
+SPDX-FileCopyrightText: 2026 Casper Welzel Andersen
+SPDX-FileCopyrightText: 2026 SINTEF Ocean AS
+
+SPDX-License-Identifier: MIT
+-->
+
 # Omnitient O1 contract and acceptance plan
 
 Status: implemented by the O1 slice. This document is the specification the code and tests follow.
