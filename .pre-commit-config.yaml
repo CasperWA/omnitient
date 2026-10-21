@@ -47,6 +47,12 @@ repos:
     hooks:
       - id: reuse
 
+  # Static checks for GitHub Actions workflows.
+  - repo: https://github.com/rhysd/actionlint
+    rev: v1.7.12
+    hooks:
+      - id: actionlint
+
   - repo: https://github.com/asottile/pyupgrade
     rev: v3.22.0
     hooks:
@@ -92,7 +98,7 @@ repos:
         exclude: ^(tests|scripts)/
 
   - repo: https://github.com/DavidAnson/markdownlint-cli2
-    rev: v0.23.3
+    rev: v0.24.0
     hooks:
       - id: markdownlint-cli2
         name: markdownlint

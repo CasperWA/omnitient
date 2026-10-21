@@ -16,8 +16,9 @@ It has no secrets, no deployment, no package publication and no write access to 
 | `Tests` (matrix) | 3.12, 3.13, 3.14, 3.15 | `pre-commit run pytest --all-files`, then `pre-commit run pytest-packaging --all-files --hook-stage manual` |
 
 The matrix has `fail-fast: false`, so every interpreter reports its own result, and `max-parallel: 2`.
-Python 3.15 is a normal required lane; it is not allowed to fail.
+Python 3.15 is an ordinary lane; it is not allowed to fail.
 Jobs time out after 30 minutes (checks) and 20 minutes (tests).
+Each lane asks `actions/setup-python` for its minor version, which resolves to the newest patch release in the runner's tool cache or, failing that, the latest stable one it can download, and then checks that the interpreter it got is that minor version, a standard (GIL) build, and the one running inside the job's own virtual environment.
 
 ## Permissions and credentials
 
@@ -25,8 +26,9 @@ Jobs time out after 30 minutes (checks) and 20 minutes (tests).
 - `actions/checkout` runs with `persist-credentials: false`, so the token is not left in the checkout's Git configuration.
 - No step uses a secret, a model-provider credential, a deployment credential or a cache from another repository.
 - `pull_request_target` is not used and never should be for code from a pull request.
-- Actions are pinned to a full commit SHA, with the release in a comment: `actions/checkout` v7.0.1 and `actions/setup-python` v7.0.0 (the latter only on GitHub-hosted runners).
-  Both run on Node 24, which needs a self-hosted runner of version 2.327.1 or newer.
+- GitHub-maintained actions use their newest stable major tag (`actions/checkout@v7`, `actions/setup-python@v7`).
+  A moving tag means the revision can change; each run's "Set up job" log records the revision it resolved to.
+  Dependabot proposes a new major version when one appears.
 
 ## Runner selection
 
@@ -38,9 +40,13 @@ The jobs choose their runner from the repository's visibility.
 | Public | `ubuntu-24.04` (GitHub-hosted) | All |
 
 The private selector is four labels, so it is neither bare `self-hosted` nor the custom `ubuntu-latest` label that the repository's two runners also carry.
-The public path names a fixed image on purpose: `runs-on: ubuntu-latest` would match GitHub-hosted runners and any self-hosted runner that carries a custom `ubuntu-latest` label, and could therefore send public pull requests to a private machine.
-Because the choice follows `github.event.repository.private`, a repository made public stops using the private pool for this workflow without any edit.
-That protects this workflow only; see the public transition below for the runners themselves.
+That label does not identify GitHub's Ubuntu image.
+The public path names a fixed image on purpose: `runs-on: ubuntu-latest` would match GitHub-hosted runners and any self-hosted runner that carries a custom `ubuntu-latest` label.
+Both paths provision Python the same way, so the only difference is where the job runs.
+
+A skipped job is not a pass.
+While the repository is private, a pull request from a fork gets no checks, and that is not test evidence.
+Skipped jobs also count as passing for required status checks, so do not rely on a skipped lane.
 
 The GitHub-hosted path has not been run.
 It becomes active only when the repository is made public, and its first run will be its first test.
@@ -48,48 +54,64 @@ It becomes active only when the repository is made public, and its first run wil
 ## Isolation
 
 A workflow condition is not an isolation boundary.
-Anyone who can push a branch to this repository can change the workflow file on that branch and run arbitrary code on a self-hosted runner.
+Anyone who can change a workflow in this repository can point it at an attached runner, and can run arbitrary code there.
 The same-repository condition only keeps pull requests from forks out of the private pool.
-Treat everyone with write access as able to run code on the machine, and keep nothing on it that they should not reach.
+Treat everyone with write access as able to run code on the runner, and keep nothing on it that they should not reach.
 
-Each job uses its own scratch directory under the runner's temporary directory and removes it afterwards, but the runner process itself is persistent and not sandboxed.
+The runner process itself is persistent and not sandboxed.
 
-## Setup and downloads
+## Provisioning, downloads and cleanup
 
-Each job creates a virtual environment inside its scratch directory and installs `.[dev]` into it.
-The jobs download:
+Every job follows the same steps:
 
-- the checkout, through `actions/checkout`;
-- `pip` itself, which `uv venv --seed` fetches from the package index into a job-local cache on the self-hosted path;
-- Python packages from the default package index (`pip install -e ".[dev]"`), with pip's cache, configuration file and index settings kept job-local;
-- in the `checks` job, the pre-commit hook repositories from GitHub and their tools (Black, Ruff, mypy, Bandit, pyupgrade, blacken-docs, REUSE lint, markdownlint-cli2 and its Node runtime if the machine has none), kept under the scratch directory through `PRE_COMMIT_HOME`.
+1. Check out the repository.
+2. Create the job's scratch directory (`.github/scripts/ci-scratch.sh create`).
+3. Print the runner's platform, user id, tool-cache writability and cached Python versions (`.github/scripts/describe-runner.sh`).
+   It prints no environment variables and reads no runner files.
+4. Provision the interpreter with `actions/setup-python`.
+5. Create a virtual environment inside the scratch directory and check the interpreter.
+6. `pip install -e ".[dev]"`.
+7. Run the pre-commit entry points.
+8. Remove the scratch directory (`ci-scratch.sh cleanup`), always, and fail the step if that did not work.
 
-The test jobs run a single hook with `pre-commit run <hook>`.
-That still clones every hook repository's manifest from GitHub, into a job-local `PRE_COMMIT_HOME`, but installs no tools, because the pytest hooks use the `python` on `PATH`.
+What is downloaded, and where it goes:
 
-Self-hosted prerequisites, which the workflow checks but does not install:
+| What | From | To |
+| --- | --- | --- |
+| The two actions | GitHub | the runner's action cache |
+| CPython, when the runner's tool cache lacks that version | `github.com/actions/python-versions` releases | the runner's tool cache (`RUNNER_TOOL_CACHE`), **persistent** and shared by later jobs on that runner |
+| Python packages for `.[dev]` and the build requirement | the default package index | the job's virtual environment and pip cache, in scratch |
+| In the `checks` job: hook repositories and their tools (Black, Ruff, mypy, Bandit, pyupgrade, blacken-docs, REUSE lint, markdownlint-cli2 and its Node runtime, actionlint and a Go toolchain if the machine has none) | GitHub, the package indexes, `go.dev`, `nodejs.org` | the job's `PRE_COMMIT_HOME`, in scratch |
+| In the test jobs: the manifests of the hook repositories (no tools) | GitHub | the job's `PRE_COMMIT_HOME`, in scratch |
 
-- `python3.12`, `python3.13`, `python3.14` and `python3.15` on the runner's `PATH`, standard CPython builds;
-- `uv`, used with `--no-python-downloads` to create environments even where a distribution Python lacks `ensurepip`;
-- `git`, and network access to GitHub and the package index.
+The only persistent write outside the job's own directories is the interpreter in the tool cache.
+Nothing deletes it.
 
-A missing `uv` or interpreter fails the job with a message rather than installing anything.
+The scratch directory is `$RUNNER_TEMP/omnitient-ci.XXXXXX`, created with a random suffix and an owner marker naming the run, attempt, job and matrix entry.
+Cleanup removes it only if it is a plain directory directly inside `RUNNER_TEMP`, has that name, is owned by the running user and carries this job's marker.
+It never removes `RUNNER_TEMP`, the tool cache or another job's files.
+If the host dies or the job is killed, the directory can be left behind; only the runner's own temporary-directory handling covers that.
 
-## Making the repository public
+There is no CI-specific requirements file: `setup-python` provides `pip`, and `pyproject.toml` owns every other dependency (`.[dev]` for the test tools, the hooks for the linters).
 
-Do these before or at the moment of the change.
-The workflow switches to GitHub-hosted runners by itself, but the runners attached to the repository do not go away.
+## Updating
 
-1. Remove the two self-hosted runners from the repository, or restrict their runner group so that public workflows cannot reach them.
-   This is the step that matters: a public repository must not keep a self-hosted runner that outside pull requests could use.
-2. In the repository's Actions settings, require approval for workflows from outside collaborators, and keep the default workflow token read-only.
-3. Run the workflow once on a branch after the change and read the first hosted results before treating them as evidence.
-   If a Python 3.15 lane fails, check first whether `setup-python` offers that interpreter.
-4. Review whether the branch protection or ruleset still names the right checks.
-5. Remove the self-hosted branch of the workflow, and the `private` conditions in it, in a later change if the repository is not going back to private.
+Dependabot is configured in [.github/dependabot.yml](../.github/dependabot.yml) for GitHub Actions and for the `dev` extra and build requirement in `pyproject.toml`.
+It opens at most two grouped pull requests a week per ecosystem and merges nothing.
+It starts only once that file is on the default branch.
+Hook revisions in `.pre-commit-config.yaml` are not covered by it; see [development.md](development.md).
 
-Skipped jobs count as passing for required status checks.
-Pull requests from forks of a private repository therefore show no checks rather than failing ones; this only matters while the repository is private.
+## Owner checklist: making the repository public
+
+This is a checklist; nothing here is done by the workflow.
+
+1. Confirm that the MIT license and the copyright notices have been merged into `main`.
+2. Remove the two dedicated self-hosted runners from the repository, or restrict who can reach them, before changing visibility.
+   A public repository must not keep a runner that outside pull requests could use.
+3. Change the visibility yourself.
+4. In the Actions settings, require approval for workflows from outside collaborators and keep the default token read-only.
+5. Check the first GitHub-hosted run and each of its four Python lanes, including the interpreter each one reports, before treating the hosted path as tested.
+6. Review which checks branch protection requires.
 
 ## Local equivalents
 

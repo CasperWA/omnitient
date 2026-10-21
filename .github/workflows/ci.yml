@@ -8,8 +8,8 @@
 #
 # While the repository is private, jobs run on this repository's own
 # self-hosted runners and only for pull requests from this repository.
-# While it is public, they run on GitHub-hosted runners instead, and the
-# self-hosted selector below is not used.
+# While it is public, they run on a GitHub-hosted image instead.
+# Both paths provision Python with actions/setup-python and are otherwise identical.
 
 name: CI
 
@@ -35,7 +35,8 @@ env:
 jobs:
   checks:
     name: Format, lint, types and docs (Python 3.12)
-    # Private repository: same-repository pull requests and pushes only.
+    # A skipped job is not a pass: pull requests from forks of a private
+    # repository get no checks at all, and nothing here says otherwise.
     if: >-
       !github.event.repository.private ||
       github.event_name != 'pull_request' ||
@@ -48,66 +49,60 @@ jobs:
     timeout-minutes: 30
     env:
       PYTHON_VERSION: "3.12"
-      REPO_PRIVATE: ${{ github.event.repository.private }}
+      CI_JOB_KEY: checks
     steps:
       - name: Check out the repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/checkout@v7
         with:
           persist-credentials: false
 
-      - name: Create a job-local scratch directory
-        shell: bash
-        run: |
-          scratch="$(mktemp -d "${RUNNER_TEMP}/omnitient-ci.XXXXXX")"
-          {
-            echo "CI_SCRATCH=${scratch}"
-            echo "PIP_CACHE_DIR=${scratch}/pip-cache"
-            echo "UV_CACHE_DIR=${scratch}/uv-cache"
-            echo "PRE_COMMIT_HOME=${scratch}/pre-commit"
-          } >> "${GITHUB_ENV}"
+      - name: Create the job's scratch directory
+        run: bash .github/scripts/ci-scratch.sh create
 
-      - name: Set up Python (GitHub-hosted runner)
-        if: ${{ !github.event.repository.private }}
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - name: Describe the runner
+        run: bash .github/scripts/describe-runner.sh
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
       - name: Create the virtual environment
-        shell: bash
         run: |
-          if [ "${REPO_PRIVATE}" = "true" ]; then
-            # Self-hosted: use the machine's own interpreter and never download one.
-            command -v uv >/dev/null || { echo "::error::uv is not on this runner's PATH (docs/ci.md)"; exit 1; }
-            uv venv --python "python${PYTHON_VERSION}" --no-python-downloads --seed "${CI_SCRATCH}/venv"
-          else
-            python -m venv "${CI_SCRATCH}/venv"
-          fi
+          python -m venv "${CI_SCRATCH}/venv"
           echo "${CI_SCRATCH}/venv/bin" >> "${GITHUB_PATH}"
           echo "VIRTUAL_ENV=${CI_SCRATCH}/venv" >> "${GITHUB_ENV}"
 
       - name: Check the interpreter
-        shell: bash
         run: |
-          python -c "import sys; print(sys.version); assert sys.version_info[:2] == tuple(map(int, '${PYTHON_VERSION}'.split('.')))"
+          python - "${PYTHON_VERSION}" <<'EOF'
+          import os
+          import sys
+
+          wanted = tuple(int(part) for part in sys.argv[1].split("."))
+          print(sys.version)
+          print("executable:", sys.executable)
+          print("base prefix:", sys.base_prefix)
+          if sys.version_info[:2] != wanted:
+              raise SystemExit(f"requested {wanted} but running {sys.version_info[:2]}")
+          if sys.prefix == sys.base_prefix or not sys.prefix.startswith(os.environ["CI_SCRATCH"]):
+              raise SystemExit("not running in the job's own virtual environment")
+          if not getattr(sys, "_is_gil_enabled", lambda: True)():
+              raise SystemExit("a free-threaded build is not what the lanes verify")
+          EOF
 
       - name: Install the development extra
-        shell: bash
         run: python -m pip install -e ".[dev]"
 
       # The pytest hooks run in the test jobs, once per interpreter.
       - name: Run the pre-commit checks
-        shell: bash
         env:
           SKIP: pytest
         run: pre-commit run --all-files --show-diff-on-failure
 
-      - name: Remove the scratch directory
+      - name: Remove the job's scratch directory
         if: ${{ always() }}
-        shell: bash
-        run: |
-          case "${CI_SCRATCH:-}" in
-            "${RUNNER_TEMP}"/omnitient-ci.*) rm -rf -- "${CI_SCRATCH}" ;;
-          esac
+        run: bash .github/scripts/ci-scratch.sh cleanup
 
   tests:
     name: Tests (Python ${{ matrix.python-version }})
@@ -124,65 +119,58 @@ jobs:
         python-version: ["3.12", "3.13", "3.14", "3.15"]
     env:
       PYTHON_VERSION: ${{ matrix.python-version }}
-      REPO_PRIVATE: ${{ github.event.repository.private }}
+      CI_JOB_KEY: ${{ matrix.python-version }}
     steps:
       - name: Check out the repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/checkout@v7
         with:
           persist-credentials: false
 
-      - name: Create a job-local scratch directory
-        shell: bash
-        run: |
-          scratch="$(mktemp -d "${RUNNER_TEMP}/omnitient-ci.XXXXXX")"
-          {
-            echo "CI_SCRATCH=${scratch}"
-            echo "PIP_CACHE_DIR=${scratch}/pip-cache"
-            echo "UV_CACHE_DIR=${scratch}/uv-cache"
-            # pre-commit clones every hook repository's manifest even for one hook.
-            echo "PRE_COMMIT_HOME=${scratch}/pre-commit"
-          } >> "${GITHUB_ENV}"
+      - name: Create the job's scratch directory
+        run: bash .github/scripts/ci-scratch.sh create
 
-      - name: Set up Python (GitHub-hosted runner)
-        if: ${{ !github.event.repository.private }}
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - name: Describe the runner
+        run: bash .github/scripts/describe-runner.sh
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
       - name: Create the virtual environment
-        shell: bash
         run: |
-          if [ "${REPO_PRIVATE}" = "true" ]; then
-            # Self-hosted: use the machine's own interpreter and never download one.
-            command -v uv >/dev/null || { echo "::error::uv is not on this runner's PATH (docs/ci.md)"; exit 1; }
-            uv venv --python "python${PYTHON_VERSION}" --no-python-downloads --seed "${CI_SCRATCH}/venv"
-          else
-            python -m venv "${CI_SCRATCH}/venv"
-          fi
+          python -m venv "${CI_SCRATCH}/venv"
           echo "${CI_SCRATCH}/venv/bin" >> "${GITHUB_PATH}"
           echo "VIRTUAL_ENV=${CI_SCRATCH}/venv" >> "${GITHUB_ENV}"
 
       - name: Check the interpreter
-        shell: bash
         run: |
-          python -c "import sys; print(sys.version); assert sys.version_info[:2] == tuple(map(int, '${PYTHON_VERSION}'.split('.')))"
+          python - "${PYTHON_VERSION}" <<'EOF'
+          import os
+          import sys
+
+          wanted = tuple(int(part) for part in sys.argv[1].split("."))
+          print(sys.version)
+          print("executable:", sys.executable)
+          print("base prefix:", sys.base_prefix)
+          if sys.version_info[:2] != wanted:
+              raise SystemExit(f"requested {wanted} but running {sys.version_info[:2]}")
+          if sys.prefix == sys.base_prefix or not sys.prefix.startswith(os.environ["CI_SCRATCH"]):
+              raise SystemExit("not running in the job's own virtual environment")
+          if not getattr(sys, "_is_gil_enabled", lambda: True)():
+              raise SystemExit("a free-threaded build is not what the lanes verify")
+          EOF
 
       - name: Install the development extra
-        shell: bash
         run: python -m pip install -e ".[dev]"
 
+      # --verbose keeps pytest's own summary (counts, skips) in the log.
       - name: Run the functional tests
-        shell: bash
-        run: pre-commit run pytest --all-files --show-diff-on-failure
+        run: pre-commit run pytest --all-files --verbose
 
       - name: Run the installed-package test
-        shell: bash
-        run: pre-commit run pytest-packaging --all-files --hook-stage manual --show-diff-on-failure
+        run: pre-commit run pytest-packaging --all-files --hook-stage manual --verbose
 
-      - name: Remove the scratch directory
+      - name: Remove the job's scratch directory
         if: ${{ always() }}
-        shell: bash
-        run: |
-          case "${CI_SCRATCH:-}" in
-            "${RUNNER_TEMP}"/omnitient-ci.*) rm -rf -- "${CI_SCRATCH}" ;;
-          esac
+        run: bash .github/scripts/ci-scratch.sh cleanup

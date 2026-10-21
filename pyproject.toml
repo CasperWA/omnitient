@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: MIT
 
 [build-system]
-requires = ["flit_core >=3.12,<4"]
+requires = ["flit_core >=4.1,<5"]
 build-backend = "flit_core.buildapi"
 
 [project]
@@ -31,7 +31,7 @@ classifiers = [
 [project.optional-dependencies]
 # Black, Ruff, mypy and Bandit are deliberately absent: pre-commit runs them.
 dev = [
-    "flit_core >=3.12,<4",
+    "flit_core >=4.1,<5",
     "markdown-it-py ~=4.2",  # parses handoffs in tests (CommonMark); not a runtime dependency
     "pre-commit ~=4.7",
     "pytest ~=9.1",

@@ -37,11 +37,16 @@ pre-commit run --all-files --hook-stage manual   # also the installed-wheel test
 | Security lint | Bandit on `src/` |
 | Docs | markdownlint, and an offline check that relative Markdown links resolve |
 | Notices | REUSE lint (`fsfe/reuse-tool`): every file has a license and copyright notice, in the file or in `REUSE.toml` |
+| Workflows | actionlint (GitHub Actions workflow files) |
 | Files | pre-commit-hooks (JSON, TOML, YAML, whitespace, large files, private keys, test naming) |
 | Tests | pytest: unit tests on commit, the installed-wheel test in the manual stage |
 
 Black, Ruff, mypy and Bandit are intentionally not in the `dev` extra.
 Their versions are pinned once, in `.pre-commit-config.yaml`.
+
+To update them, run `pre-commit autoupdate` in a branch, restore anything that is a prerelease or drops a supported Python version, and run the checks.
+Dependabot does not touch hook revisions; it covers GitHub Actions and the `dev` extra and build requirement in `pyproject.toml`.
+`pre-commit autoupdate` does not update the Black pin inside the blacken-docs hook.
 When you bump Black, change it in both the Black hook and the blacken-docs `additional_dependencies`.
 
 ## Tests
