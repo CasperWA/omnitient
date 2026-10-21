@@ -42,7 +42,7 @@
     "work_package": "o2-git-pinned-context",
     "title": "Verify pinned Git revisions of context locally",
     "stage": "draft",
-    "content_digest": "40dd19d1da011f5e3c0b6442678efffc98aa882baf718668c5ca47d42a00cf43",
+    "content_digest": "1f5b736b52459ae1d6f856109b5eb59e09ccd26e24593ca5e55b874da9f6c222",
     "objective": "O1 records the Git revision a context file was taken from but never checks it.\nLet a package verify, from a local repository only, that a pinned revision exists and that the file at that revision has the expected digest, so a handoff can say whether the supplied content really corresponds to the pinned revision.\nVerification is read-only and optional; packages without git provenance behave exactly as in O1.",
     "scope": [
       "Verify that a context reference's supplied git revision exists in a local repository mapped to the reference's root, and that the file at that revision has the expected digest.",
@@ -143,7 +143,7 @@
       "mode": "embed",
       "purpose": "The O1 contract this slice extends: section 3.1 defines git provenance and section 6 context resolution.",
       "git": {
-        "revision": "a9fcfa12e9042489b7a7cbe7ec8220d83d1cb5d3",
+        "revision": "06618873f8ca2323d04d22476a1a6f5b008f8e74",
         "repository": "omnitient"
       },
       "status": "ok",
@@ -160,7 +160,7 @@
       "mode": "embed",
       "purpose": "Where context resolution lives; verification of a pinned revision would hook in here.",
       "git": {
-        "revision": "a9fcfa12e9042489b7a7cbe7ec8220d83d1cb5d3",
+        "revision": "06618873f8ca2323d04d22476a1a6f5b008f8e74",
         "repository": "omnitient"
       },
       "status": "ok",
@@ -177,7 +177,7 @@
       "mode": "embed",
       "purpose": "Where any new readiness diagnostics would be added.",
       "git": {
-        "revision": "a9fcfa12e9042489b7a7cbe7ec8220d83d1cb5d3",
+        "revision": "06618873f8ca2323d04d22476a1a6f5b008f8e74",
         "repository": "omnitient"
       },
       "status": "ok",
