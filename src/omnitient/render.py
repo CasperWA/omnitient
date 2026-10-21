@@ -133,9 +133,6 @@ def render_format(handoff: Handoff, fmt: Literal["md", "json"]) -> bytes:
     return data
 
 
-# --- Markdown ---------------------------------------------------------------
-
-
 # Author-controlled text never enters the document as Markdown. A single line
 # is an inline code span and any longer text is a fenced block, because
 # CommonMark reads both literally: no raw HTML, entities, links, images or
@@ -390,9 +387,6 @@ def render_markdown(handoff: Handoff) -> str:
         ),
     ]
     return "\n".join(out).rstrip("\n") + "\n"
-
-
-# --- JSON -------------------------------------------------------------------
 
 
 def handoff_dict(handoff: Handoff) -> dict[str, Any]:

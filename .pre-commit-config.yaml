@@ -3,20 +3,9 @@
 #
 # SPDX-License-Identifier: MIT
 
-# Shared development-check entry point.
-#
-#   pre-commit run --all-files                       # everything that runs on commit
-#   pre-commit run --all-files --hook-stage manual   # also the heavier manual checks
-#
-# Run it with the `omnitient` virtualenv active: the local pytest hooks use the
-# `python` on PATH so that they test the editable install.
-
-# Python-based hooks run under the repo's baseline interpreter.
 default_language_version:
   python: python3.12
 
-# Generated handoffs embed arbitrary file contents verbatim and must not be
-# reformatted by the file, formatting or Markdown hooks.
 exclude: ^examples/.*/handoffs/
 
 repos:
@@ -41,13 +30,11 @@ repos:
       - id: trailing-whitespace
         args: ["--markdown-linebreak-ext=md"]
 
-  # License and copyright notices on every file (REUSE specification).
   - repo: https://github.com/fsfe/reuse-tool
     rev: v6.2.0
     hooks:
       - id: reuse
 
-  # Static checks for GitHub Actions workflows.
   - repo: https://github.com/rhysd/actionlint
     rev: v1.7.12
     hooks:
@@ -59,8 +46,6 @@ repos:
       - id: pyupgrade
         args: ["--py312-plus"]
 
-  # Black formats code; blacken-docs formats Python in documentation.
-  # Both are pinned to the same Black version.
   - repo: https://github.com/psf/black-pre-commit-mirror
     rev: 26.10.1
     hooks:
@@ -106,7 +91,6 @@ repos:
 
   - repo: local
     hooks:
-      # Relative Markdown links must resolve (offline).
       - id: markdown-links
         name: markdown links resolve
         entry: python scripts/check_markdown_links.py
@@ -120,11 +104,6 @@ repos:
         pass_filenames: false
         files: ^(src|tests)/.*\.py$
 
-      # The example pins the contract and two modules (examples/README.md).
-      # A commit that changes only the contract or the example skips the hook
-      # above, so this runs just the example's test for those files. The
-      # generated handoffs are excluded from every hook (see `exclude`), so a
-      # commit that changes only them runs neither hook; CI covers that.
       - id: pytest-example
         name: pytest (pinned example)
         entry: python -m pytest -q --no-cov tests/test_example.py
@@ -132,8 +111,6 @@ repos:
         pass_filenames: false
         files: ^(docs/o1-contract\.md|examples/.*)$
 
-      # Builds a wheel, installs it into a throwaway virtualenv and runs the
-      # console script outside the source tree. Offline, but slower.
       - id: pytest-packaging
         name: pytest (installed-wheel check)
         entry: python -m pytest -q -m packaging

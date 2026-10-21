@@ -3,12 +3,6 @@
 #
 # SPDX-License-Identifier: MIT
 
-# Version updates only, one grouped pull request per ecosystem, opened for
-# review. Nothing here merges anything.
-#
-# Not covered: the hook revisions in .pre-commit-config.yaml, and the Black
-# pin inside the blacken-docs hook. See docs/development.md for how those are
-# updated.
 version: 2
 updates:
   - package-ecosystem: github-actions
@@ -22,8 +16,6 @@ updates:
       actions:
         patterns: ["*"]
 
-  # The `dev` extra and the build requirement in pyproject.toml.
-  # There are no runtime dependencies and no separate CI requirements file.
   - package-ecosystem: pip
     directory: "/"
     schedule:

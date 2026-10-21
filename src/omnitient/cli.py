@@ -71,9 +71,6 @@ def _json(data: object) -> str:
     return json.dumps(data, indent=2, ensure_ascii=False)
 
 
-# --- shared helpers -----------------------------------------------------------
-
-
 def _mapping(args: argparse.Namespace, pkg: WorkPackage | None = None) -> HostMapping:
     mapping = build_host_mapping(args.root or (), args.roots_file)
     if pkg is not None:
@@ -124,9 +121,6 @@ def _truncate(text: str, width: int) -> str:
     if len(first) > width:
         return first[: width - 1] + "…"
     return first + "…" if len(lines) > 1 else first
-
-
-# --- commands -----------------------------------------------------------------
 
 
 def cmd_new(args: argparse.Namespace) -> int:
@@ -469,9 +463,6 @@ def cmd_schema(_args: argparse.Namespace) -> int:
     ).read_text(encoding="utf-8")
     sys.stdout.write(text)
     return EXIT_OK
-
-
-# --- parser -------------------------------------------------------------------
 
 
 def _host_parent() -> argparse.ArgumentParser:

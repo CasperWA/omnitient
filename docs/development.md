@@ -47,6 +47,7 @@ CI catches it: its test jobs run the whole suite, and `tests/test_example.py` re
 
 Black, Ruff, mypy and Bandit are intentionally not in the `dev` extra.
 Their versions are pinned once, in `.pre-commit-config.yaml`.
+The `dev` extra holds the test tools (`pytest`, `pytest-cov`, and `markdown-it-py`, which parses handoffs in tests), `pre-commit` and the build backend; none of it is a runtime dependency.
 
 To update them, run `pre-commit autoupdate` in a branch, restore anything that is a prerelease or drops a supported Python version, and run the checks.
 Dependabot does not touch hook revisions; it covers GitHub Actions and the `dev` extra and build requirement in `pyproject.toml`.
@@ -87,6 +88,20 @@ uv venv --python /usr/bin/python3.14 --no-python-downloads --seed /tmp/omnitient
 /tmp/omnitient-py314/bin/python -m pytest
 ```
 
+## Notices
+
+Two files hold the license text, and both are needed.
+`LICENSE` is the file that people, GitHub and the wheel's metadata look for, and it names the copyright holders.
+`LICENSES/MIT.txt` is the unmodified SPDX text that the REUSE specification requires for every license identifier used in `SPDX-License-Identifier` lines; without it `reuse lint`, and so the `reuse` hook, reports `Missing licenses: MIT`.
+The wheel ships both (`license-files` in `pyproject.toml`), and the packaging test checks that.
+Do not edit either by hand.
+
+`REUSE.toml` carries the notice for files whose format cannot hold a comment, or whose bytes are generated and compared exactly: `LICENSE`, the pull request template and the example work package.
+The packaged JSON Schema has a companion `.license` file instead, because it ships in the wheel, where `REUSE.toml` does not.
+
+The committed example handoff is generated from the example work package and embeds only three first-party files (the O1 contract, `context.py` and `readiness.py`), so it carries the same notice through `REUSE.toml`.
+That is specific to this example: a handoff generated from other packages embeds whatever context those packages list, carries no notice and makes no claim about who owns that context.
+
 ## Layout
 
 | Path | Contents |
@@ -115,4 +130,8 @@ Keep validation, context resolution and rendering free of CLI I/O so they stay t
   After changing a pinned file, run `omnitient context pin` for it and render the handoff again, as described in [examples/README.md](../examples/README.md); a test fails until you do.
 - Every new first-party file needs an SPDX notice for the license and the copyright holders, in a comment where the format allows one and in `REUSE.toml` where it does not.
   Copy the header from a neighbouring file.
+  See "Notices" below.
+- Comments explain a non-obvious reason; they do not repeat what the code or a configuration key already says.
+  Rationale for tooling and policy belongs in these documents, not in the configuration file.
+- Markdown prose follows one sentence per line, so `.markdownlint.yaml` allows long lines (headings stay short), repeats a heading text under different parents and does not require aligned table pipes.
 - Do not commit `*.local.json`, `*.meta.json` or anything holding host paths or credentials.

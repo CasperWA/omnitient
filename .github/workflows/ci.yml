@@ -3,14 +3,9 @@
 #
 # SPDX-License-Identifier: MIT
 
-# Pull request and main checks. See docs/ci.md for the runner policy, the
-# download behaviour and the steps for making the repository public.
-#
-# While the repository is private, jobs run on this repository's own
-# self-hosted runners and only for pull requests from this repository, and
-# not for runs that Dependabot triggers (a person can re-run those).
-# While it is public, they run on a GitHub-hosted image instead.
-# Both paths provision Python with actions/setup-python and are otherwise identical.
+# Pull request and main checks. docs/ci.md covers the runner policy, the download
+# behaviour and making the repository public; read it before changing runner
+# selection or the job conditions.
 
 name: CI
 
@@ -27,9 +22,6 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
-  # Ignore the machine's pip configuration files; the job installs into a
-  # job-local environment. PIP_* variables of the runner service would still
-  # apply; see docs/ci.md.
   PIP_CONFIG_FILE: /dev/null
   PIP_DISABLE_PIP_VERSION_CHECK: "1"
   PIP_NO_INPUT: "1"
@@ -37,19 +29,11 @@ env:
 jobs:
   checks:
     name: Format, lint, types and docs (Python 3.12)
-    # A skipped job is not a pass: pull requests from forks of a private
-    # repository get no checks at all, and nothing here says otherwise.
-    # Neither do runs that Dependabot triggers while the repository is
-    # private, until a person re-runs them (docs/ci.md).
     if: >-
       !github.event.repository.private ||
       github.event_name != 'pull_request' ||
       (github.event.pull_request.head.repo.full_name == github.repository &&
       github.triggering_actor != 'dependabot[bot]')
-    # Private: this repository's runners, selected by four labels. Not bare
-    # `self-hosted`, and not the custom `ubuntu-latest` label that those
-    # runners also carry. Public: a fixed GitHub-hosted image, never
-    # `ubuntu-latest`, which the attached runners would also match.
     runs-on: ${{ github.event.repository.private && fromJSON('["self-hosted","Linux","X64","sintef-desktop-cwa"]') || 'ubuntu-24.04' }}
     timeout-minutes: 30
     env:
@@ -99,7 +83,6 @@ jobs:
       - name: Install the development extra
         run: python -m pip install -e ".[dev]"
 
-      # The pytest hooks run in the test jobs, once per interpreter.
       - name: Run the pre-commit checks
         env:
           SKIP: pytest,pytest-example

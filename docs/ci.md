@@ -119,7 +119,7 @@ There is no CI-specific requirements file: `setup-python` provides `pip`, and `p
 ## Updating
 
 Dependabot is configured in [.github/dependabot.yml](../.github/dependabot.yml) for GitHub Actions and for the `dev` extra and build requirement in `pyproject.toml`.
-It opens at most two grouped pull requests a week per ecosystem and merges nothing.
+It opens version updates only, at most two grouped pull requests a week per ecosystem, and merges nothing.
 It starts only once that file is on the default branch.
 Hook revisions in `.pre-commit-config.yaml` are not covered by it; see [development.md](development.md).
 
