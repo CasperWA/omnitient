@@ -206,6 +206,11 @@ def test_recommendation_limits_are_validated(
         ("report", "repo:../spec.md", False),
         ("report", "repo:.env", False),
         ("report", "ftp://example.org/x", False),
+        # urlsplit raises ValueError for these; they must be diagnostics
+        ("pr", "https://[::1", False),
+        ("pr", "https://[not-an-address]/x", False),
+        ("report", "https://exa]mple.org/", False),
+        ("report", "https://[::1]:99999999999/x", False),
     ],
 )
 def test_evidence_reference_rules(
@@ -230,6 +235,17 @@ def test_git_repository_with_password_is_rejected(package: WorkPackage) -> None:
     data = to_dict(package)
     data["context"][0]["git"]["repository"] = "https://bot:secret@example.org/r.git"
     assert parse_dict(data)[0] is None
+
+
+@pytest.mark.parametrize("repository", ["https://[::1", "https://[bad]/r.git"])
+def test_malformed_git_repository_url_is_a_diagnostic(
+    package: WorkPackage, repository: str
+) -> None:
+    data = to_dict(package)
+    data["context"][0]["git"]["repository"] = repository
+    pkg, problems = parse_dict(data)
+    assert pkg is None
+    assert any("context[0].git.repository" in line for line in problems)
 
 
 def test_packaged_json_schema_matches_the_model(package: WorkPackage) -> None:

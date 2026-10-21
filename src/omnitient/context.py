@@ -3,8 +3,7 @@
 from __future__ import annotations
 
 import hashlib
-import json
-import stat
+import os
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -18,6 +17,12 @@ from omnitient.limits import (
     MAX_REFERENCE_FILE_BYTES,
 )
 from omnitient.model import ContextMode, ContextRef, WorkPackage
+from omnitient.safeio import (
+    NotRegularFileError,
+    loads_strict,
+    open_regular,
+    read_regular,
+)
 
 ContextStatus = Literal[
     "ok",
@@ -31,6 +36,7 @@ ContextStatus = Literal[
 ]
 
 _CHUNK = 1024 * 1024
+_ROOTS_FILE_MAX = 65_536
 
 
 @dataclass(frozen=True)
@@ -99,16 +105,21 @@ def build_host_mapping(
 
 def _read_roots_file(path: Path) -> list[tuple[str, str]]:
     try:
-        with path.open("rb") as handle:
-            raw = handle.read(65_537)
+        raw = read_regular(path, _ROOTS_FILE_MAX)
+    except NotRegularFileError as exc:
+        raise refusal(
+            "roots.invalid", f"roots file {path} is not a regular file"
+        ) from exc
     except OSError as exc:
         raise refusal(
             "roots.invalid", f"cannot read roots file {path}: {exc.strerror}"
         ) from exc
-    if len(raw) > 65_536:
-        raise refusal("roots.invalid", f"roots file {path} is larger than 65536 bytes")
+    if len(raw) > _ROOTS_FILE_MAX:
+        raise refusal(
+            "roots.invalid", f"roots file {path} is larger than {_ROOTS_FILE_MAX} bytes"
+        )
     try:
-        data = json.loads(raw.decode("utf-8"))
+        data = loads_strict(raw.decode("utf-8"))
     except ValueError as exc:
         raise refusal(
             "roots.invalid", f"roots file {path} is not valid JSON: {exc}"
@@ -158,36 +169,31 @@ def _inspect(root: Path, relative: str, mode: ContextMode, budget: int) -> _Insp
         target = (root / relative).resolve(strict=True)
     except FileNotFoundError:
         return _Inspection("missing", "file does not exist")
-    except (OSError, RuntimeError) as exc:
-        return _Inspection("unreadable", f"cannot resolve path: {exc}")
+    except OSError as exc:
+        return _Inspection("unreadable", f"cannot resolve path: {exc.strerror}")
+    except RuntimeError:
+        return _Inspection("unreadable", "cannot resolve path: symlink loop")
     if not target.is_relative_to(root):
         return _Inspection("unsafe_path", "resolves outside its root (symlink escape)")
     if forbidden := rules.forbidden_reason(target.relative_to(root).as_posix()):
         return _Inspection("unsafe_path", f"resolves to a file that {forbidden}")
 
-    try:
-        info = target.stat()
-    except OSError as exc:
-        return _Inspection("unreadable", f"cannot stat file: {exc.strerror}")
-    if not stat.S_ISREG(info.st_mode):
-        return _Inspection("missing", "not a regular file")
-
     embed = mode == "embed"
     limit = min(MAX_EMBED_FILE_BYTES, budget) if embed else MAX_REFERENCE_FILE_BYTES
-    if info.st_size > limit:
-        what = (
-            f"the {mode} limit of {MAX_EMBED_FILE_BYTES} or the remaining "
-            f"total embed budget of {budget}"
-            if embed
-            else f"the {mode} limit of {limit}"
-        )
-        return _Inspection("too_large", f"{info.st_size} bytes exceeds {what}")
-
     digest = hashlib.sha256()
     chunks: list[bytes] = []
     size = 0
     try:
-        with target.open("rb") as handle:
+        with open_regular(target) as handle:
+            declared = os.fstat(handle.fileno()).st_size
+            if declared > limit:
+                what = (
+                    f"the {mode} limit of {MAX_EMBED_FILE_BYTES} or the remaining "
+                    f"total embed budget of {budget}"
+                    if embed
+                    else f"the {mode} limit of {limit}"
+                )
+                return _Inspection("too_large", f"{declared} bytes exceeds {what}")
             while chunk := handle.read(_CHUNK):
                 size += len(chunk)
                 if size > limit:
@@ -197,6 +203,10 @@ def _inspect(root: Path, relative: str, mode: ContextMode, budget: int) -> _Insp
                 digest.update(chunk)
                 if embed:
                     chunks.append(chunk)
+    except NotRegularFileError:
+        return _Inspection("missing", "not a regular file")
+    except FileNotFoundError:
+        return _Inspection("missing", "file does not exist")
     except OSError as exc:
         return _Inspection("unreadable", f"cannot read file: {exc.strerror}")
 

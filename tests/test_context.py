@@ -4,8 +4,12 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
+import sys
+from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -174,13 +178,13 @@ def test_only_listed_files_are_read(
 ) -> None:
     (repo / "docs" / "unlisted.md").write_text("never read", encoding="utf-8")
     opened: list[str] = []
-    real_open = Path.open
+    real_open = os.open
 
-    def spy(self: Path, *args: object, **kwargs: object):  # type: ignore[no-untyped-def]
-        opened.append(self.name)
-        return real_open(self, *args, **kwargs)  # type: ignore[call-overload]
+    def spy(path: Any, *args: Any, **kwargs: Any) -> int:
+        opened.append(Path(os.fsdecode(path)).name)
+        return real_open(path, *args, **kwargs)
 
-    monkeypatch.setattr(Path, "open", spy)
+    monkeypatch.setattr(os, "open", spy)
     resolve_context(package, mapping)
     assert sorted(opened) == ["notes.md", "spec.md"]
 
@@ -237,6 +241,66 @@ class TestHostMapping:
         with pytest.raises(OmnitientError):
             build_host_mapping([], roots_file)
 
+    def test_duplicate_keys_in_a_roots_file_are_refused(
+        self, repo: Path, tmp_path: Path
+    ) -> None:
+        roots_file = tmp_path / "roots.json"
+        roots_file.write_text(
+            f'{{"roots": {{"repo": "/elsewhere", "repo": "{repo}"}}}}', encoding="utf-8"
+        )
+        with pytest.raises(OmnitientError) as info:
+            build_host_mapping([], roots_file)
+        diag = info.value.diagnostics[0]
+        assert diag.code == "roots.invalid"
+        assert "duplicate key" in diag.message
+
+    @pytest.mark.parametrize(
+        "content",
+        [
+            pytest.param("[" * 60_000, id="array"),
+            pytest.param('{"roots": {"a": ' + "[" * 60_000, id="array-in-roots"),
+        ],
+    )
+    def test_deeply_nested_roots_file_is_a_diagnostic_not_a_crash(
+        self, tmp_path: Path, content: str
+    ) -> None:
+        roots_file = tmp_path / "roots.json"
+        roots_file.write_text(content, encoding="utf-8")
+        with pytest.raises(OmnitientError) as info:
+            build_host_mapping([], roots_file)
+        assert info.value.diagnostics[0].code == "roots.invalid"
+
+    def test_roots_file_that_is_not_a_regular_file_is_refused_without_blocking(
+        self, tmp_path: Path, write_package: Callable[..., Path], package: WorkPackage
+    ) -> None:
+        # A FIFO with no writer blocks an ordinary open() forever, so the CLI runs
+        # in a child process that is killed (and reaped) by the timeout.
+        fifo = tmp_path / "roots.fifo"
+        os.mkfifo(fifo)
+        try:
+            done = subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "omnitient",
+                    "validate",
+                    str(write_package(package)),
+                    "--roots-file",
+                    str(fifo),
+                ],
+                capture_output=True,
+                text=True,
+                timeout=20,
+                check=False,
+                cwd=tmp_path,
+            )
+        except subprocess.TimeoutExpired:
+            pytest.fail("opening a FIFO as a roots file blocked")
+        assert done.returncode == 1
+        assert "roots.invalid" in done.stderr
+        assert "not a regular file" in done.stderr
+        assert "Traceback" not in done.stderr
+
     def test_mapping_never_changes_context_identity(self, package: WorkPackage) -> None:
         assert all(isinstance(c, ContextRef) for c in package.context)
 
@@ -245,7 +309,10 @@ def test_symlink_loop_is_reported_not_raised(
     package: WorkPackage, mapping: HostMapping, repo: Path
 ) -> None:
     (repo / "docs" / "loop.md").symlink_to(repo / "docs" / "loop.md")
-    assert one(with_ref(package, path="docs/loop.md"), mapping).status == "unreadable"
+    found = one(with_ref(package, path="docs/loop.md"), mapping)
+    assert found.status == "unreadable"
+    assert str(repo) not in found.detail  # handoffs carry no host paths
+    assert "loop" in found.detail or "symbolic links" in found.detail
 
 
 def test_digest_file_applies_the_mode_rules(repo: Path) -> None:

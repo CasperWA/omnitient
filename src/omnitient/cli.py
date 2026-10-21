@@ -33,12 +33,15 @@ from omnitient.readiness import Readiness
 from omnitient.schema import parse_package
 from omnitient.serialize import content_digest, dumps, sha256_hex
 from omnitient.store import (
+    MANIFEST_SCHEMA,
+    MANIFEST_SCHEMA_VERSION,
     LoadedPackage,
+    check_bundle,
     create_package,
     load_package,
     package_path,
+    publish_bundle,
     update_package,
-    write_output,
 )
 
 EXIT_OK = 0
@@ -288,7 +291,10 @@ def cmd_render(args: argparse.Namespace) -> int:
         sys.stdout.flush()
     else:
         directory = Path(args.out)
+        manifest_name = f"handoff-{stage}.meta.json"
         meta = {
+            "schema": MANIFEST_SCHEMA,
+            "schema_version": MANIFEST_SCHEMA_VERSION,
             "generated_at": ops.timestamp(_now()),
             "omnitient_version": __version__,
             "package_file": str(loaded.path.resolve()),
@@ -301,26 +307,26 @@ def cmd_render(args: argparse.Namespace) -> int:
             },
             "outputs": {name: sha256_hex(data) for name, data in outputs.items()},
         }
-        outputs[f"handoff-{stage}.meta.json"] = (_json(meta) + "\n").encode("utf-8")
         try:
             directory.mkdir(parents=True, exist_ok=True)
         except OSError as exc:
             raise refusal(
                 "output.unwritable", f"cannot create {directory}: {exc.strerror}"
             ) from exc
-        if not args.force:
-            existing = [
-                name
-                for name in outputs
-                if (directory / name).exists() or (directory / name).is_symlink()
-            ]
-            if existing:
-                raise refusal(
-                    "output.exists",
-                    f"{', '.join(existing)} already exist in {directory}; use --force to replace them",
-                )
-        for name, data in outputs.items():
-            write_output(directory / name, data, overwrite=args.force)
+        publish_bundle(
+            directory,
+            outputs,
+            (manifest_name, (_json(meta) + "\n").encode("utf-8")),
+            overwrite=args.force,
+        )
+        if problems := check_bundle(directory, manifest_name):
+            raise refusal(
+                "output.conflict",
+                f"the bundle in {directory} does not verify after writing, so "
+                f"another writer probably interfered: {'; '.join(problems)}. "
+                "Re-run the command.",
+            )
+        for name in (*outputs, manifest_name):
             _out(f"wrote {directory / name}")
 
     if not report.ready:

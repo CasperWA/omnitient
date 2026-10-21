@@ -78,7 +78,11 @@ def url_problem(value: str) -> str | None:
         return f"is longer than {URL_MAX} characters"
     if text_problem(value, multiline=False) or any(c.isspace() for c in value):
         return "contains whitespace or control characters"
-    parts = urlsplit(value)
+    try:
+        parts = urlsplit(value)
+        _ = parts.port  # raises ValueError for a malformed port
+    except ValueError:
+        return "is not a well-formed URL"
     if parts.scheme != "https" or not parts.hostname:
         return "must be an https:// URL"
     if "@" in parts.netloc:
@@ -86,14 +90,16 @@ def url_problem(value: str) -> str | None:
     return None
 
 
-def embeds_password(value: str) -> bool:
-    """True for a ``scheme://user:password@host`` style value."""
+def repository_problem(value: str) -> str | None:
+    """Reject a ``scheme://user:password@host`` style value or a malformed URL."""
     if "://" not in value:
-        return False
+        return None
     try:
-        return urlsplit(value).password is not None
+        if urlsplit(value).password is not None:
+            return "must not embed credentials"
     except ValueError:
-        return True
+        return "is not a well-formed URL"
+    return None
 
 
 def relative_path_problem(path: str) -> str | None:

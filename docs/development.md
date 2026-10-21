@@ -49,6 +49,7 @@ An autouse fixture makes any attempt to open a network connection fail the test.
 The packaging test builds a wheel with `--no-build-isolation --no-index`, installs it into a throwaway virtual environment and runs the console script from another directory.
 It needs `flit_core`, which the `dev` extra installs.
 The render tests parse every handoff with `markdown-it-py` (a CommonMark parser, installed by the `dev` extra) to check that author text cannot change the document's structure; it is a test dependency only.
+Tests that could block, such as opening a FIFO, run the command in a child process with a timeout, so a regression fails the test instead of hanging the run.
 
 To try another interpreter, create a disposable environment outside the repository and install the same test dependencies:
 
@@ -68,7 +69,8 @@ uv venv --python /usr/bin/python3.14 --no-python-downloads --seed /tmp/omnitient
 | `src/omnitient/context.py` | Host mapping and safe context resolution. |
 | `src/omnitient/readiness.py` | Per-stage readiness rules. |
 | `src/omnitient/ops.py` | Pure transformations: approve, add evidence, edit context. |
-| `src/omnitient/store.py` | Bounded reads, exclusive creation, checked updates. |
+| `src/omnitient/store.py` | Exclusive creation, checked updates, handoff bundle publication and verification. |
+| `src/omnitient/safeio.py` | Bounded regular-file reads and strict JSON parsing. |
 | `src/omnitient/render.py` | Markdown and JSON handoffs, with no I/O. |
 | `src/omnitient/cli.py` | All terminal and file I/O. |
 | `src/omnitient/data/` | Packaged JSON Schema. |

@@ -8,7 +8,6 @@ is documentation for editors.
 
 from __future__ import annotations
 
-import json
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any, TypeVar, cast
@@ -49,6 +48,7 @@ from omnitient.model import (
     Root,
     WorkPackage,
 )
+from omnitient.safeio import loads_strict
 
 T = TypeVar("T")
 
@@ -252,8 +252,8 @@ def _parse_git(r: _Reader) -> GitProvenance:
         "revision", rules.GIT_REVISION, "7-64 lowercase hex characters"
     )
     repository = r.text("repository", max_chars=LINE_MAX, required=False)
-    if repository is not None and rules.embeds_password(repository):
-        r.error("repository", "must not embed credentials")
+    if repository is not None and (problem := rules.repository_problem(repository)):
+        r.error("repository", problem)
     ref = r.pattern("ref", rules.LABEL, "a ref label without spaces", required=False)
     r.finish()
     return GitProvenance(_s(revision), repository, ref)
@@ -469,19 +469,6 @@ def _cross_check(pkg: WorkPackage, diags: list[Diagnostic]) -> None:
         _check_evidence_ref(item, roots, f"$.evidence[{index}]", diags)
 
 
-def _no_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-    out: dict[str, Any] = {}
-    for key, value in pairs:
-        if key in out:
-            raise ValueError(f"duplicate key {key!r}")
-        out[key] = value
-    return out
-
-
-def _reject_constant(name: str) -> Any:
-    raise ValueError(f"{name} is not allowed")
-
-
 def parse_package(raw: bytes) -> ParseResult:
     """Parse and validate package bytes; ``package`` is ``None`` on any error."""
     if len(raw) > MAX_PACKAGE_BYTES:
@@ -496,12 +483,8 @@ def parse_package(raw: bytes) -> ParseResult:
             ),
         )
     try:
-        data = json.loads(
-            raw.decode("utf-8"),
-            object_pairs_hook=_no_duplicate_keys,
-            parse_constant=_reject_constant,
-        )
-    except (ValueError, RecursionError) as exc:
+        data = loads_strict(raw.decode("utf-8"))
+    except ValueError as exc:
         return ParseResult(
             None, (Diagnostic("schema.syntax", "error", f"not valid JSON: {exc}"),)
         )

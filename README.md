@@ -93,7 +93,7 @@ A worked example with unresolved decisions lives in [examples/](examples/).
 | `new` | Scaffold a draft, unapproved package. |
 | `validate` | Schema validity, then readiness for each handoff stage. |
 | `show` | Compact read-only inspection. |
-| `render` | Generate `handoff-<stage>.md`, `.json` and a metadata sidecar. |
+| `render` | Generate `handoff-<stage>.md`, `.json` and a metadata sidecar that doubles as the bundle's completion manifest. |
 | `approve` | Record approval of the present revision for a stage. |
 | `evidence add` | Append a report, PR or commit reference. |
 | `context add` / `context pin` | Add a context file, or accept its changed digest. |

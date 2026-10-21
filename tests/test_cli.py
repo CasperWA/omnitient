@@ -11,6 +11,7 @@ import pytest
 
 from omnitient.cli import _truncate, main
 from omnitient.model import Decision, WorkPackage
+from omnitient.store import MANIFEST_SCHEMA, check_bundle
 
 Run = Callable[..., tuple[int, str, str]]
 
@@ -326,6 +327,82 @@ def test_render_never_overwrites_without_force(
     )
 
 
+def render_args(pkg_file: Path, repo: Path, out_dir: Path, *extra: object) -> tuple:
+    return (
+        "render",
+        pkg_file,
+        "--stage",
+        "planning",
+        "--out",
+        out_dir,
+        "--root",
+        f"repo={repo}",
+        *extra,
+    )
+
+
+def test_render_publishes_a_bundle_whose_manifest_verifies(
+    run: Run, pkg_file: Path, repo: Path, tmp_path: Path
+) -> None:
+    out_dir = tmp_path / "handoffs"
+    code, out, _ = run(*render_args(pkg_file, repo, out_dir))
+    assert code == 0
+    names = [
+        "handoff-planning.md",
+        "handoff-planning.json",
+        "handoff-planning.meta.json",
+    ]
+    assert [
+        Path(line.removeprefix("wrote ")).name for line in out.splitlines()
+    ] == names
+    manifest = json.loads((out_dir / names[2]).read_text(encoding="utf-8"))
+    assert manifest["schema"] == MANIFEST_SCHEMA
+    assert sorted(manifest["outputs"]) == sorted(names[:2])
+    assert check_bundle(out_dir, names[2]) == []
+    (out_dir / names[0]).write_text("tampered", encoding="utf-8")
+    assert any("differs" in p for p in check_bundle(out_dir, names[2]))
+
+
+def test_forced_render_replaces_a_bundle_and_keeps_unrelated_files(
+    run: Run, pkg_file: Path, repo: Path, tmp_path: Path
+) -> None:
+    out_dir = tmp_path / "handoffs"
+    assert run(*render_args(pkg_file, repo, out_dir))[0] == 0
+    (out_dir / "handoff-implementation.md").write_text(
+        "another stage", encoding="utf-8"
+    )
+    (out_dir / "notes.txt").write_text("mine", encoding="utf-8")
+    (repo / "docs" / "spec.md").write_text("changed\n", encoding="utf-8")
+    code, _, err = run(*render_args(pkg_file, repo, out_dir, "--force"))
+    assert code == 3  # the changed spec no longer matches its pinned digest
+    assert "context.digest_mismatch" in err
+    assert check_bundle(out_dir, "handoff-planning.meta.json") == []
+    assert "changed" not in (out_dir / "handoff-planning.md").read_text(
+        encoding="utf-8"
+    )
+    assert (out_dir / "notes.txt").read_text(encoding="utf-8") == "mine"
+    assert (out_dir / "handoff-implementation.md").read_text(
+        encoding="utf-8"
+    ) == "another stage"
+
+
+def test_render_reports_an_interrupted_bundle_and_force_completes_it(
+    run: Run, pkg_file: Path, repo: Path, tmp_path: Path
+) -> None:
+    out_dir = tmp_path / "handoffs"
+    out_dir.mkdir()
+    (out_dir / "handoff-planning.md").write_text("half a bundle", encoding="utf-8")
+    code, _, err = run(*render_args(pkg_file, repo, out_dir))
+    assert code == 1
+    assert "output.exists" in err
+    assert "interrupted" in err
+    assert (out_dir / "handoff-planning.md").read_text(
+        encoding="utf-8"
+    ) == "half a bundle"
+    assert run(*render_args(pkg_file, repo, out_dir, "--force"))[0] == 0
+    assert check_bundle(out_dir, "handoff-planning.meta.json") == []
+
+
 def test_render_to_stdout(run: Run, pkg_file: Path, repo: Path) -> None:
     code, out, _ = run(
         "render",
@@ -561,6 +638,24 @@ def test_context_add_refusals(run: Run, pkg_file: Path, repo: Path) -> None:
     assert (
         run("context", "add", pkg_file, "repo:.env", "--root", f"repo={repo}")[0] == 1
     )
+    assert pkg_file.read_bytes() == before
+
+
+def test_malformed_url_is_a_refusal_not_a_traceback(run: Run, pkg_file: Path) -> None:
+    before = pkg_file.read_bytes()
+    code, _, err = run(
+        "evidence",
+        "add",
+        pkg_file,
+        "--kind",
+        "pr",
+        "--ref",
+        "https://[::1",
+        "--by",
+        "me",
+    )
+    assert code == 1
+    assert "not a well-formed URL" in err
     assert pkg_file.read_bytes() == before
 
 

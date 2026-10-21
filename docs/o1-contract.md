@@ -92,8 +92,9 @@ Fields: `id`; `stage` (the handoff stage it applies to); `model` (line, optional
 Fields: `id`; `kind` (`report`, `pr` or `commit`); `ref`; `summary` (line, optional); `recorded_by` (line); `recorded_at` (UTC timestamp `YYYY-MM-DDTHH:MM:SSZ`); `engine` (optional object `{run_id, attempt_id?}`).
 
 - `commit`: 7–64 lowercase hex characters.
-- `pr`: an `https://` URL without embedded credentials. Never fetched.
-- `report`: an `https://` URL without embedded credentials, or `root:relative/path` using a declared root and the path rules of section 6.1. Never fetched or read.
+- `pr`: a well-formed `https://` URL without embedded credentials. Never fetched.
+- `report`: a well-formed `https://` URL without embedded credentials, or `root:relative/path` using a declared root and the path rules of section 6.1. Never fetched or read.
+A URL that cannot be parsed (for example an unclosed `[` in the host or a port that is not a number in range) is a schema error, as is a `git.repository` that is a malformed or credential-bearing URL.
 - `engine.run_id` and `engine.attempt_id`: `^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`. Opaque identities. They never mark a run complete and have no effect on readiness.
 
 ### 3.5 Approval record
@@ -158,6 +159,8 @@ A `draft` package is always labelled DRAFT in its output.
 Only the context references listed in the package are read.
 Nothing is discovered, scanned recursively, fetched from a URL or executed.
 Context content is evidence, not permission to run commands; handoffs say so and keep it inside explicit boundaries (section 8.3).
+A context file is opened once; its type (a regular file) and size are checked on the open descriptor, and a FIFO or device is reported as `context.missing` without being read.
+Diagnostic details never contain host paths, so handoffs stay host-independent.
 
 ### 6.1 Path rules
 
@@ -174,6 +177,8 @@ This is a safeguard against mistakes, not a security boundary against a hostile 
 
 Supplied per invocation as repeatable `--root NAME=ABSOLUTE_DIR` and/or `--roots-file FILE` (`{"roots": {"NAME": "ABSOLUTE_DIR"}}`).
 The same name given twice is an error.
+A roots file is read like a package: it must be a regular file of at most 65,536 bytes (a FIFO or device is refused without blocking), UTF-8 JSON with no duplicate keys, no `NaN`/`Infinity` and bounded nesting.
+Every such failure is a `roots.invalid` diagnostic and exit status 1.
 A name the package does not declare produces a warning.
 Host paths never appear in the semantic handoff; they are recorded only in the metadata sidecar (section 8.4).
 
@@ -185,11 +190,13 @@ Exceeding one refuses with a diagnostic naming the limit; nothing required is si
 | Limit | Value |
 | --- | --- |
 | Package file size | 262,144 bytes |
+| Roots file size | 65,536 bytes |
 | Items per list | see section 3; `roots` at most 16 |
 | Embedded context, per file | 262,144 bytes |
 | Embedded context, total per handoff | 786,432 bytes |
 | Reference-mode file (hash only) | 67,108,864 bytes |
 | Rendered output, per file | 1,048,576 bytes |
+| Completion manifest, when read back | 1,048,576 bytes |
 
 An optional (`required: false`) reference that exceeds an embed limit is listed as not embedded, with the reason.
 A required reference that exceeds a limit blocks readiness, and `render` produces no output rather than a short one.
@@ -238,15 +245,40 @@ The "how to read" section states that code spans and fences quote the author's t
 
 ### 8.4 Outputs
 
-With `--out DIR` (default format `both`) the command writes:
+With `--out DIR` (default format `both`) the command publishes one **bundle**:
 
-- `handoff-<stage>.md`
-- `handoff-<stage>.json`
-- `handoff-<stage>.meta.json`, the host-resolution sidecar: generation time, Omnitient version, the resolved host mapping, the package file path and the SHA-256 of each output. It is not part of the semantic handoff.
+- `handoff-<stage>.md` and `handoff-<stage>.json` (as selected by `--format`);
+- `handoff-<stage>.meta.json`, the host-resolution sidecar and **completion manifest**: `schema` (`omnitient/handoff-manifest`), `schema_version` (1), generation time, Omnitient version, the resolved host mapping, the package file path and SHA-256, and `outputs`, the SHA-256 of each handoff file it vouches for. It is not part of the semantic handoff.
 
 `--out -` with `--format md` or `--format json` writes that one document to standard output and no sidecar.
-Existing output files are never overwritten unless `--force` is given.
 The package file is never modified by `render`.
+`render` prints its `wrote` lines only after the whole bundle was published and verified.
+
+**Publication.** The data files are written first and the manifest last.
+
+- Without `--force`, no existing file is touched: the command refuses (`output.exists`) when any of the bundle's names exists, and creates each file exclusively, so a concurrent writer cannot be overwritten.
+  If it loses a race, it removes only files it created, recognised by device and inode, and reports `output.exists`.
+- With `--force`, it first removes the old manifest, so the old completion marker can never vouch for new data, then replaces each data file atomically through a uniquely named temporary file, and creates the manifest exclusively last.
+  If another writer published a manifest meanwhile, it removes nothing and reports `output.conflict`.
+  Replaced files are not rolled back.
+- After publishing, the command applies the reader rule below to what is on disk and reports `output.conflict` if it does not verify.
+- Unrelated files in the directory, including other stages' bundles, are never touched.
+
+**Reader rule.** A bundle is complete only if all of these hold, which `omnitient.store.check_bundle` implements:
+
+1. `handoff-<stage>.meta.json` exists, is a regular file and is valid JSON of schema `omnitient/handoff-manifest` version 1;
+2. its `outputs` object is not empty and every key is a plain file name in the same directory;
+3. each listed file is a regular file of at most 1,048,576 bytes whose SHA-256 equals the listed value.
+
+Files not listed are not part of the bundle.
+A copy of a handoff without its sidecar cannot be verified by this rule; the sidecar holds host paths and is not meant to be committed, so committed handoffs (such as the example's) are plain documents.
+
+**Interrupted or mixed bundles.** An interrupted write leaves data files and no manifest, or a manifest that fails to parse or verify.
+Treat any bundle that fails the reader rule as incomplete: do not use it.
+Recover by running the same `render` command again with `--force` (this works whether the manifest is missing, stale or mismatched); alternatively delete the bundle's files by hand.
+A no-clobber run that finds data files without a manifest says that an earlier write was probably interrupted.
+Concurrent `--force` runs for the same bundle are not serialised, so one of them can fail with `output.conflict`; a reader that applies the rule only accepts files that match one writer's manifest, never a mixture.
+There is no lock file, journal or rollback.
 
 ### 8.5 JSON handoff
 
@@ -269,7 +301,7 @@ Console script: `omnitient` (also `python -m omnitient`).
 | `context pin PACKAGE ID... --root ROOT=DIR` | Replace the expected digest of the named references with the current file digests. Explicit acceptance of drift; invalidates approvals; supplied `git` provenance is left for the author to update. | edits context |
 | `schema` | Print the packaged JSON Schema. | no |
 
-Exit codes: `0` success (and READY where readiness is evaluated); `1` refused or invalid input (schema errors, unsafe paths, limits, existing output, store conflicts); `2` command-line usage error; `3` valid input but not ready.
+Exit codes: `0` success (and READY where readiness is evaluated); `1` refused or invalid input (schema errors, unsafe paths, limits, existing output, store and output conflicts); `2` command-line usage error; `3` valid input but not ready.
 
 Read commands (`validate`, `show`, `schema`, and `render` with `--out -`) never write any file.
 
@@ -278,10 +310,21 @@ Read commands (`validate`, `show`, `schema`, and `render` with `--out -`) never 
 Packages are plain files; there is no database.
 
 - Creation uses exclusive create and fails if the path exists.
-- Every in-place update (`approve`, `evidence add`, `context add`, `context pin`) follows one routine: read the file and remember its SHA-256; compute the new package and verify it is schema-valid; take an exclusive lock file (`PACKAGE.lock`); re-read the file and abort with `store.conflict` if its SHA-256 changed; write a temporary file in the same directory and atomically replace the package; release the lock.
+- Every file the tool reads that someone else controls (package, roots file, context file, and the package again during an update) is read through one routine: opened without blocking, required to be a regular file by checking the open descriptor, and read up to its bound.
+  A FIFO, device or directory is refused, never read.
+- Every in-place update (`approve`, `evidence add`, `context add`, `context pin`) follows one routine: read the file and remember its SHA-256; compute the new package and verify it is schema-valid; take an exclusive lock file (`PACKAGE.lock`); re-read the file with the same type and size bounds and abort with `store.conflict` if it is no longer a regular file, is larger than the package limit or its SHA-256 changed; write a uniquely named temporary file in the same directory and atomically replace the package; release the lock.
 - A lock file left by a crash must be removed by hand; the diagnostic says so.
+- Temporary files are created exclusively under names that include the process id and random bytes, and a failed creation never removes anything.
+  Cleanup removes only a file the operation created, recognised by device and inode.
+  A crash can leave a `.NAME.tmp-*` file, which is safe to delete.
 - Evidence and approval updates are append-only: the command verifies that the covered-content digest and all earlier evidence and approval records are unchanged before writing.
 - The tool writes canonical formatting (two-space indent, fixed key order, trailing newline). Hand-edited files remain valid and are normalised the next time the tool writes them.
+- Handoff bundles are published as described in section 8.4.
+
+**Trust and concurrency assumptions.** The files belong to one user on a local POSIX filesystem.
+The checks resolve symlinks and test file types, but a process of the same user that swaps files between a check and an open, or deletes the files the tool created, is not defended against; neither are lock files on filesystems with unreliable exclusive create.
+Approvals are provenance, not authentication (section 4.1).
+Windows was neither considered nor tested.
 
 ## 11. Host-independence
 
@@ -297,6 +340,8 @@ These resolve phrases in the brief that admit more than one reading; each is rev
 3. **`stage` is outside the approved revision** and is advanced by `approve`; readiness never relies on it.
 4. **Decisions are edited by hand** in O1; there are no decision subcommands. Any edit changes the digest.
 5. **Review handoffs** require a current approval for the `review` stage, as implementation handoffs require one for `implementation`.
+6. **The completion manifest is the existing sidecar.** `handoff-<stage>.meta.json` already listed the output digests, so it is written last and verified by readers; no new file, command or lock was added. A dedicated `verify` command, if wanted, is future work.
+7. **Author text is quoted as code, not escaped.** Code spans and fences are literal in CommonMark without an escaping table to maintain; the cost is that prose such as scope entries reads as code in a rendered view. Escaping individual characters would keep the prose but depends on knowing every construct a renderer treats specially.
 
 ## 13. Acceptance plan
 
@@ -310,7 +355,9 @@ Every item is an offline pytest test; none reads production state, credentials o
 | Changing approved content invalidates its approval reference | `test_approval.py::test_changing_covered_content_makes_the_approval_stale`, `test_approval.py::test_changing_uncovered_content_keeps_the_approval_current` |
 | Equivalent content under different host mappings is portable | `test_render.py::test_host_mapping_does_not_change_handoff`, `test_render.py::test_output_is_reproducible` |
 | Evidence can be added without rewriting history | `test_evidence.py`, `test_render.py::test_evidence_changes_only_the_evidence_section`, `test_cli.py::test_full_workflow_from_scaffold_to_ready_handoff` |
-| Malformed input, unsafe paths, overwrites and output limits behave predictably | `test_schema.py`, `test_context.py` (symlinks, forbidden files, size limits, host mapping), `test_store.py`, `test_render.py::test_output_limit_refuses_instead_of_truncating`, `test_cli.py::test_render_never_overwrites_without_force` |
+| Malformed input, unsafe paths, overwrites and output limits behave predictably | `test_schema.py` (including malformed URLs), `test_context.py` (symlinks, forbidden files, size limits, host mapping, roots-file duplicate keys, nesting and FIFOs), `test_store.py`, `test_render.py::test_output_limit_refuses_instead_of_truncating`, `test_cli.py::test_render_never_overwrites_without_force` |
+| Reads of files that others control are bounded and never block; cleanup touches only files the operation created | `test_store.py::test_reread_during_update_is_bounded_like_the_first_read`, `test_store.py::test_reread_during_update_does_not_block_on_a_fifo`, `test_store.py::test_preexisting_file_at_the_old_temporary_name_survives_an_update`, `test_store.py::test_exhausted_temporary_names_fail_without_deleting_the_colliding_file`, `test_context.py::TestHostMapping` |
+| A handoff bundle is complete only when its manifest verifies; replacement and races never leave a blessed mixture | `test_store.py` (publication order, losing races, interrupted replacement, reader rule), `test_cli.py::test_render_publishes_a_bundle_whose_manifest_verifies`, `test_cli.py::test_forced_render_replaces_a_bundle_and_keeps_unrelated_files`, `test_cli.py::test_render_reports_an_interrupted_bundle_and_force_completes_it` |
 | Context Markdown and package text cannot impersonate or hide control sections under CommonMark (parsed with `markdown-it-py`) | `test_render.py::test_context_cannot_forge_control_sections`, `test_render.py::test_package_text_cannot_forge_control_sections`, `test_render.py::test_unclosed_html_comment_in_a_list_entry_does_not_hide_later_sections`, `test_render.py::test_code_span_round_trips_through_a_commonmark_parser`, `test_render.py::test_fenced_text_round_trips_and_leaves_the_document_intact`, `test_render.py::test_fence_is_longer_than_any_backtick_run` |
 | The installed console script and packaged data work outside the source cwd | `test_packaging.py` (marker `packaging`) |
 | No production state, credentials or external services are contacted | An autouse fixture in `conftest.py` makes any socket connection fail the test; tests use temporary directories and a temporary `HOME`; `test_packaging.py` builds with `--no-build-isolation --no-index`; `test_cli.py::test_cli_touches_nothing_but_its_targets` |
