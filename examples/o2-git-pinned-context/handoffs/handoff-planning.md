@@ -8,7 +8,7 @@
 
 - Target stage: planning
 - Package stage: draft
-- Revision (content digest): `1415d936e84892f2bf6e434ae4503989c4bca2051317050fd78ef14cef97b80e`
+- Revision (content digest): `40dd19d1da011f5e3c0b6442678efffc98aa882baf718668c5ca47d42a00cf43`
 - Approval: not required for a planning handoff
 
 ### Blockers
@@ -127,11 +127,11 @@ Approval records are workflow provenance (who recorded approval of which revisio
 ### Context `contract`
 
 - File: `omnitient:docs/o1-contract.md`
-- Expected SHA-256: `be930a35ecf98239f4f74edd3b763b3d4d4dd81c108891c2c325ee3f007aa466`
+- Expected SHA-256: `6444651a39cc10e555937509d1e5f52ff1d56ef2736951da02bdb702e47314b3`
 - Required: yes; mode: embed
 - Purpose: `The O1 contract this slice extends: section 3.1 defines git provenance and section 6 context resolution.`
 - Git provenance (supplied, not verified): revision `a9fcfa12e9042489b7a7cbe7ec8220d83d1cb5d3`, repository `omnitient`
-- Status: embedded; digest verified; 37533 bytes.
+- Status: embedded; digest verified; 37850 bytes.
 
 ````text
 <!--
@@ -474,13 +474,14 @@ Packages are plain files; there is no database.
 - Creation uses exclusive create and fails if the path exists.
 - Every file the tool reads that someone else controls (package, roots file, context file, and the package again during an update) is read through one routine: opened without blocking, required to be a regular file by checking the open descriptor, and read up to its bound.
   A FIFO, device or directory is refused, never read.
-- Every in-place update (`approve`, `evidence add`, `context add`, `context pin`) follows one routine: read the file and remember its SHA-256; compute the new package and verify it is schema-valid; take an exclusive lock file (`PACKAGE.lock`) and remember its device and inode; re-read the file with the same type and size bounds and abort with `store.conflict` if it is no longer a regular file, is larger than the package limit or its SHA-256 changed; write a uniquely named temporary file in the same directory and atomically replace the package; remove the lock file if it is still the one this update created.
+- Every in-place update (`approve`, `evidence add`, `context add`, `context pin`) follows one routine: read the file and remember its SHA-256; compute the new package and verify it is schema-valid; take an exclusive lock file (`PACKAGE.lock`), write a random token into it and remember its device and inode; re-read the file with the same type and size bounds and abort with `store.conflict` if it is no longer a regular file, is larger than the package limit or its SHA-256 changed; write a uniquely named temporary file in the same directory and atomically replace the package; remove the lock file only if it still has that device, inode and token.
 - A lock file left by a crash must be removed by hand; the diagnostic says so, and says to check first whether the crashed update already changed the package, since repeating an `approve` or `evidence add` appends a second record.
 - A replaced file (a package during an update, or a handoff file or manifest under `render --force`) keeps the read, write and execute bits of the file it replaces; the temporary file gets them before any data is written.
   Set-user-ID, set-group-ID and sticky bits are never copied, and the owner, group, ACLs and extended attributes are not carried over: the new file belongs to the user running the command.
   A new file (a scaffold, a lock file, or an output that did not exist) is created with mode 0666 minus the umask.
 - Temporary files are created exclusively under names that include the process id and random bytes, and a failed creation never removes anything.
   Cleanup, including the release of a lock, removes only a file the operation created, recognised by device and inode.
+  A filesystem can give a deleted file's inode to a new file, so the lock, which people are told to remove by hand, is also recognised by its token; other files have names that are random or created exclusively, and their deletion by another process is outside these assumptions.
   A crash can leave a `.NAME.tmp-*` file, which is safe to delete.
 - Evidence and approval updates are append-only: the command verifies that the covered-content digest and all earlier evidence and approval records are unchanged before writing.
 - The tool writes canonical formatting (two-space indent, fixed key order, trailing newline). Hand-edited files remain valid and are normalised the next time the tool writes them.
@@ -975,7 +976,7 @@ def evaluate_all(
 ## 11. Provenance
 
 - Package: `omnitient/provenance/o2-git-pinned-context`
-- Revision: `1415d936e84892f2bf6e434ae4503989c4bca2051317050fd78ef14cef97b80e`
+- Revision: `40dd19d1da011f5e3c0b6442678efffc98aa882baf718668c5ca47d42a00cf43`
 - Package schema: `omnitient/work-package` version 1
 - Handoff schema: `omnitient/handoff` version 1
 - This document contains no generation time and no host paths; identical inputs give identical output.

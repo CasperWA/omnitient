@@ -590,26 +590,37 @@ def test_reader_rule_rejects_malformed_manifest_keys_and_versions(
     assert "1 to 8 files" in problems(outputs=too_many)[0]
 
 
+@pytest.mark.parametrize("same_inode", [False, True])
 def test_lock_release_removes_only_the_lock_this_update_took(
-    tmp_path: Path, package: WorkPackage, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    package: WorkPackage,
+    monkeypatch: pytest.MonkeyPatch,
+    same_inode: bool,
 ) -> None:
     path = tmp_path / "p.json"
     create_package(path, package)
     lock = tmp_path / "p.json.lock"
     real_read = store.read_regular
+    fired: list[bool] = []
 
     def lock_replaced_meanwhile(target: Path, limit: int) -> bytes:
-        # Someone removes the lock by hand and a second update takes a new one.
-        lock.unlink()
-        lock.write_text("second update", encoding="utf-8")
+        if target == path.resolve() and not fired:
+            # Someone removes the lock by hand and a second update takes a new
+            # one. A filesystem may give the new file the old inode; writing
+            # into the old file stands in for that case deterministically.
+            if not same_inode:
+                lock.unlink()
+            lock.write_text("second update", encoding="utf-8")
+            fired.append(True)
         return real_read(target, limit)
 
     loaded = load_package(path)
     monkeypatch.setattr(store, "read_regular", lock_replaced_meanwhile)
     update_package(loaded, lambda p: replace(p, title="First"))
+    monkeypatch.setattr(store, "read_regular", real_read)
+    assert fired
     assert load_package(path).package.title == "First"
     assert lock.read_text(encoding="utf-8") == "second update"
-    monkeypatch.setattr(store, "read_regular", real_read)
     with pytest.raises(OmnitientError) as info:
         update_package(load_package(path), lambda p: replace(p, title="Third"))
     assert code_of(info) == "store.locked"

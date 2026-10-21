@@ -81,13 +81,20 @@ def _kept_mode(path: Path) -> int | None:
     return stat.S_IMODE(info.st_mode) & 0o777
 
 
-def _discard(path: Path, ident: _FileId) -> None:
-    """Remove ``path`` only while it is still the file this operation created."""
+def _discard(path: Path, ident: _FileId, token: bytes | None = None) -> None:
+    """Remove ``path`` only while it is still the file this operation created.
+
+    A deleted file's device and inode can be given to a new file, so where
+    the creator wrote a unique ``token`` as the content, that must match too.
+    """
     try:
         info = os.lstat(path)
-        if (info.st_dev, info.st_ino) == ident:
-            path.unlink()
-    except OSError:
+        if (info.st_dev, info.st_ino) != ident:
+            return
+        if token is not None and read_regular(path, len(token)) != token:
+            return
+        path.unlink()
+    except (OSError, NotRegularFileError):
         pass
 
 
@@ -169,8 +176,9 @@ def update_package(
 
     path = loaded.path.resolve()  # a symlinked package is updated in place
     lock = path.with_name(path.name + ".lock")
+    token = f"{os.getpid()} {secrets.token_hex(16)}\n".encode("ascii")
     try:
-        lock_ident = _create_exclusive(lock, b"")
+        lock_ident = _create_exclusive(lock, token)
     except FileExistsError as exc:
         raise refusal(
             "store.locked",
@@ -216,7 +224,7 @@ def update_package(
     finally:
         if temp is not None:
             _discard(*temp)
-        _discard(lock, lock_ident)  # only our own lock, never one taken since
+        _discard(lock, lock_ident, token)  # only our own lock, never one taken since
     return new
 
 
