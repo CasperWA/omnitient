@@ -23,6 +23,7 @@ DECISIONS_MAX = 200
 RECOMMENDATIONS_MAX = 20
 EVIDENCE_MAX = 500
 APPROVALS_MAX = 100
+MAX_BUNDLE_OUTPUTS = 8  # files a completion manifest may list
 
 # Sizes, in bytes.
 MAX_PACKAGE_BYTES = 262_144

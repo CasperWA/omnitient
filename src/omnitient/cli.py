@@ -40,12 +40,13 @@ from omnitient.serialize import content_digest, dumps, sha256_hex
 from omnitient.store import (
     MANIFEST_SCHEMA,
     MANIFEST_SCHEMA_VERSION,
+    IncompleteBundleError,
     LoadedPackage,
-    check_bundle,
     create_package,
     load_package,
     package_path,
     publish_bundle,
+    read_bundle,
     update_package,
 )
 
@@ -318,18 +319,24 @@ def cmd_render(args: argparse.Namespace) -> int:
             raise refusal(
                 "output.unwritable", f"cannot create {directory}: {exc.strerror}"
             ) from exc
+        manifest_data = (_json(meta) + "\n").encode("utf-8")
         publish_bundle(
-            directory,
-            outputs,
-            (manifest_name, (_json(meta) + "\n").encode("utf-8")),
-            overwrite=args.force,
+            directory, outputs, (manifest_name, manifest_data), overwrite=args.force
         )
-        if problems := check_bundle(directory, manifest_name):
+        try:
+            bundle = read_bundle(directory, manifest_name)
+        except IncompleteBundleError as exc:
             raise refusal(
                 "output.conflict",
                 f"the bundle in {directory} does not verify after writing, so "
-                f"another writer probably interfered: {'; '.join(problems)}. "
-                "Re-run the command.",
+                f"another writer probably interfered: {exc}. Re-run the command.",
+            ) from exc
+        if bundle.files != outputs or bundle.manifest != json.loads(manifest_data):
+            raise refusal(
+                "output.conflict",
+                f"the bundle in {directory} verifies, but another writer replaced "
+                "it after this one wrote it. Re-run the command if you need this "
+                "command's output.",
             )
         for name in (*outputs, manifest_name):
             _out(f"wrote {directory / name}")

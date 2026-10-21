@@ -10,10 +10,11 @@ from __future__ import annotations
 import json
 import os
 import secrets
+import stat
 import subprocess
 import sys
 import textwrap
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -23,16 +24,18 @@ import pytest
 from conftest import sha
 from omnitient import ops, store
 from omnitient.errors import OmnitientError
-from omnitient.limits import MAX_PACKAGE_BYTES
+from omnitient.limits import MAX_BUNDLE_OUTPUTS, MAX_PACKAGE_BYTES
 from omnitient.model import WorkPackage
 from omnitient.serialize import dumps
 from omnitient.store import (
     MANIFEST_SCHEMA,
+    IncompleteBundleError,
     check_bundle,
     create_package,
     load_package,
     package_path,
     publish_bundle,
+    read_bundle,
     update_package,
 )
 
@@ -533,3 +536,171 @@ def test_updating_through_a_symlink_edits_the_target(
     update_package(load_package(link), lambda p: replace(p, title="Via link"))
     assert link.is_symlink()
     assert load_package(real).package.title == "Via link"
+
+
+def test_read_bundle_returns_the_bytes_it_verified(tmp_path: Path) -> None:
+    publish(tmp_path)
+    bundle = read_bundle(tmp_path, "h.meta.json")
+    assert bundle.files == FILES
+    assert bundle.manifest["outputs"] == {n: sha(d) for n, d in FILES.items()}
+    publish(tmp_path, {"h.md": b"later", "h.json": b"{}"}, overwrite=True)
+    assert bundle.files == FILES  # what was verified, not what is on disk now
+
+
+@pytest.mark.parametrize("after", ["h.meta.json", "h.md"])
+def test_a_replacement_while_reading_fails_instead_of_mixing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, after: str
+) -> None:
+    publish(tmp_path)
+    later = {"h.md": b"later", "h.json": b'{"later": 1}'}
+    real_read = store.read_regular
+    fired: list[str] = []
+
+    def read_then_replace(path: Path, limit: int) -> bytes:
+        data = real_read(path, limit)
+        if path.name == after and not fired:
+            fired.append(after)
+            publish(tmp_path, later, overwrite=True)  # another writer, mid-read
+        return data
+
+    monkeypatch.setattr(store, "read_regular", read_then_replace)
+    with pytest.raises(IncompleteBundleError) as info:
+        read_bundle(tmp_path, "h.meta.json")
+    assert fired
+    assert any("differs from the manifest" in p for p in info.value.problems)
+    assert check_bundle(tmp_path, "h.meta.json") == []  # the newer bundle is whole
+
+
+def test_reader_rule_rejects_malformed_manifest_keys_and_versions(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "x").write_bytes(b"x")
+
+    def problems(**body: Any) -> list[str]:
+        manifest = {"schema": MANIFEST_SCHEMA, "schema_version": 1, **body}
+        (tmp_path / "m.json").write_text(json.dumps(manifest), encoding="utf-8")
+        return check_bundle(tmp_path, "m.json")
+
+    assert problems(outputs={"x": sha(b"x")}) == []
+    assert problems(outputs={"a\0b": sha(b"x")}) == [
+        "'a\\x00b' is not a plain file name"
+    ]
+    assert problems(outputs={"x": sha(b"x")}, schema_version=True) != []
+    too_many = {f"f{i}": sha(b"x") for i in range(MAX_BUNDLE_OUTPUTS + 1)}
+    assert "1 to 8 files" in problems(outputs=too_many)[0]
+
+
+def test_lock_release_removes_only_the_lock_this_update_took(
+    tmp_path: Path, package: WorkPackage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "p.json"
+    create_package(path, package)
+    lock = tmp_path / "p.json.lock"
+    real_read = store.read_regular
+
+    def lock_replaced_meanwhile(target: Path, limit: int) -> bytes:
+        # Someone removes the lock by hand and a second update takes a new one.
+        lock.unlink()
+        lock.write_text("second update", encoding="utf-8")
+        return real_read(target, limit)
+
+    loaded = load_package(path)
+    monkeypatch.setattr(store, "read_regular", lock_replaced_meanwhile)
+    update_package(loaded, lambda p: replace(p, title="First"))
+    assert load_package(path).package.title == "First"
+    assert lock.read_text(encoding="utf-8") == "second update"
+    monkeypatch.setattr(store, "read_regular", real_read)
+    with pytest.raises(OmnitientError) as info:
+        update_package(load_package(path), lambda p: replace(p, title="Third"))
+    assert code_of(info) == "store.locked"
+    assert "check whether the package already has the change" in (
+        info.value.diagnostics[0].message
+    )
+
+
+@pytest.fixture
+def umask_022() -> Iterator[None]:
+    old = os.umask(0o022)
+    try:
+        yield
+    finally:
+        os.umask(old)
+
+
+def mode_of(path: Path) -> int:
+    return stat.S_IMODE(path.stat().st_mode)
+
+
+@pytest.mark.usefixtures("umask_022")
+@pytest.mark.parametrize("mode", [0o600, 0o640, 0o444, 0o755])
+def test_update_keeps_the_package_file_mode(
+    tmp_path: Path, package: WorkPackage, mode: int
+) -> None:
+    path = tmp_path / "p.json"
+    create_package(path, package)
+    path.chmod(mode)
+    update_package(load_package(path), lambda p: replace(p, title="Updated"))
+    assert load_package(path).package.title == "Updated"
+    assert mode_of(path) == mode
+
+
+@pytest.mark.usefixtures("umask_022")
+def test_replacement_never_copies_special_mode_bits(
+    tmp_path: Path, package: WorkPackage
+) -> None:
+    path = tmp_path / "p.json"
+    create_package(path, package)
+    path.chmod(0o6750)
+    if mode_of(path) != 0o6750:
+        pytest.skip("this filesystem does not keep set-user-ID and set-group-ID bits")
+    update_package(load_package(path), lambda p: replace(p, title="Updated"))
+    assert mode_of(path) == 0o750
+
+
+def test_new_files_follow_the_umask(tmp_path: Path, package: WorkPackage) -> None:
+    (tmp_path / "out").mkdir()
+    (tmp_path / "forced").mkdir()
+    old = os.umask(0o027)
+    try:
+        create_package(tmp_path / "p.json", package)
+        publish(tmp_path / "out")
+        publish(tmp_path / "forced", overwrite=True)  # nothing there to replace
+    finally:
+        os.umask(old)
+    assert mode_of(tmp_path / "p.json") == 0o640
+    for directory in (tmp_path / "out", tmp_path / "forced"):
+        assert {mode_of(f) for f in directory.iterdir()} == {0o640}
+
+
+@pytest.mark.usefixtures("umask_022")
+def test_forced_bundle_keeps_the_modes_of_the_files_it_replaces(
+    tmp_path: Path,
+) -> None:
+    publish(tmp_path)
+    for name in ("h.md", "h.meta.json"):
+        (tmp_path / name).chmod(0o600)
+    publish(tmp_path, {"h.md": b"new", "h.json": b"{}"}, overwrite=True)
+    assert check_bundle(tmp_path, "h.meta.json") == []
+    assert mode_of(tmp_path / "h.md") == 0o600
+    assert mode_of(tmp_path / "h.meta.json") == 0o600
+    assert mode_of(tmp_path / "h.json") == 0o644
+
+
+def test_a_failed_mode_change_leaves_the_package_and_no_stray_files(
+    tmp_path: Path, package: WorkPackage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "p.json"
+    create_package(path, package)
+    path.chmod(0o600)
+    original = path.read_bytes()
+
+    def refuse(_fd: int, _mode: int) -> None:
+        raise OSError(1, "Operation not permitted")
+
+    monkeypatch.setattr(os, "fchmod", refuse)
+    with pytest.raises(OmnitientError) as info:
+        update_package(load_package(path), lambda p: replace(p, title="Updated"))
+    assert code_of(info) == "store.unwritable"
+    assert path.read_bytes() == original
+    assert mode_of(path) == 0o600
+    assert listing(tmp_path) == ["p.json"]  # no temporary file, no lock

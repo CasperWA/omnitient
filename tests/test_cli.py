@@ -7,16 +7,25 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
+import os
+import threading
 from collections.abc import Callable, Iterator
 from dataclasses import replace
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from omnitient.cli import _truncate, main
 from omnitient.model import Decision, WorkPackage
-from omnitient.store import MANIFEST_SCHEMA, check_bundle
+from omnitient.store import (
+    MANIFEST_SCHEMA,
+    IncompleteBundleError,
+    check_bundle,
+    read_bundle,
+)
 
 Run = Callable[..., tuple[int, str, str]]
 
@@ -759,3 +768,145 @@ def test_truncate_marks_only_real_cuts() -> None:
     assert _truncate("short", 20) == "short"
     assert _truncate("one\ntwo", 20) == "one…"
     assert _truncate("x" * 30, 10) == "x" * 9 + "…"
+
+
+class Turnstile:
+    """Runs scripted file operations of named threads in one fixed order.
+
+    Each step is (thread name, event, file name), where the event is
+    ``unlink``, ``replace``, ``create`` or ``read``. Operations that are not in
+    the rest of the script run freely.
+    """
+
+    def __init__(self, script: list[tuple[str, str, str]]) -> None:
+        self.script = script
+        self.position = 0
+        self.condition = threading.Condition()
+
+    @contextlib.contextmanager
+    def turn(self, event: str, path: Any) -> Iterator[None]:
+        step = (threading.current_thread().name, event, Path(os.fsdecode(path)).name)
+        if step not in self.script[self.position :]:
+            yield
+            return
+        with self.condition:
+            if not self.condition.wait_for(
+                lambda: self.script[self.position] == step, timeout=10
+            ):
+                raise AssertionError(f"{step} never got its turn")
+        try:
+            yield
+        finally:
+            with self.condition:
+                self.position += 1
+                self.condition.notify_all()
+
+    def install(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        real_open, real_replace, real_unlink = os.open, os.replace, os.unlink
+
+        def gated_open(path: Any, flags: int, *args: Any, **kw: Any) -> int:
+            with self.turn("create" if flags & os.O_CREAT else "read", path):
+                return real_open(path, flags, *args, **kw)
+
+        def gated_replace(src: Any, dst: Any, *args: Any, **kw: Any) -> None:
+            with self.turn("replace", dst):
+                real_replace(src, dst, *args, **kw)
+
+        def gated_unlink(path: Any, *args: Any, **kw: Any) -> None:
+            with self.turn("unlink", path):
+                real_unlink(path, *args, **kw)
+
+        monkeypatch.setattr(os, "open", gated_open)
+        monkeypatch.setattr(os, "replace", gated_replace)
+        monkeypatch.setattr(os, "unlink", gated_unlink)
+
+
+def forced_renders(
+    pkg_a: Path, pkg_b: Path, repo: Path, out_dir: Path
+) -> dict[str, int | AssertionError]:
+    """Run ``render --force`` for A and B at once; their exit codes by name.
+
+    A thread that dies of any other exception has no entry, which fails the
+    comparison in the test.
+    """
+    results: dict[str, int | AssertionError] = {}
+
+    def render_as(name: str, pkg: Path) -> None:
+        try:
+            results[name] = main(
+                [str(a) for a in render_args(pkg, repo, out_dir, "--force")]
+            )
+        except AssertionError as exc:  # a step that never got its turn
+            results[name] = exc
+
+    threads = [
+        threading.Thread(target=render_as, name=name, args=(name, pkg))
+        for name, pkg in (("A", pkg_a), ("B", pkg_b))
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=30)
+    return results
+
+
+MD, JS, META = (f"handoff-planning.{ext}" for ext in ("md", "json", "meta.json"))
+
+
+def test_concurrent_forced_renders_can_both_fail_and_never_verify_a_mixture(
+    pkg_file: Path,
+    repo: Path,
+    tmp_path: Path,
+    write_package: Callable[..., Path],
+    package: WorkPackage,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    other = write_package(replace(package, title="Other writer"), name="other")
+    out_dir = tmp_path / "handoffs"
+    assert main([str(a) for a in render_args(pkg_file, repo, out_dir)]) == 0
+    Turnstile(
+        [
+            ("A", "unlink", META),
+            ("B", "unlink", META),
+            ("A", "replace", MD),
+            ("A", "replace", JS),
+            ("B", "replace", MD),
+            ("B", "replace", JS),
+            ("A", "create", META),
+            ("B", "create", META),  # A's manifest is there: B reports a conflict
+            ("A", "read", META),  # A's manifest, B's data: A reports a conflict
+        ]
+    ).install(monkeypatch)
+    assert forced_renders(pkg_file, other, repo, out_dir) == {"A": 1, "B": 1}
+    with pytest.raises(IncompleteBundleError):
+        read_bundle(out_dir, META)
+
+
+def test_a_forced_render_whose_bundle_was_replaced_does_not_claim_it(
+    pkg_file: Path,
+    repo: Path,
+    tmp_path: Path,
+    write_package: Callable[..., Path],
+    package: WorkPackage,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    other = write_package(replace(package, title="Other writer"), name="other")
+    out_dir = tmp_path / "handoffs"
+    assert main([str(a) for a in render_args(pkg_file, repo, out_dir)]) == 0
+    Turnstile(
+        [
+            ("A", "unlink", META),
+            ("A", "replace", MD),
+            ("A", "replace", JS),
+            ("A", "create", META),
+            ("B", "unlink", META),
+            ("B", "replace", MD),
+            ("B", "replace", JS),
+            ("B", "create", META),
+            ("B", "read", META),
+            ("A", "read", META),  # a complete bundle, but B's
+        ]
+    ).install(monkeypatch)
+    assert forced_renders(pkg_file, other, repo, out_dir) == {"A": 1, "B": 0}
+    bundle = read_bundle(out_dir, META)
+    assert b"Other writer" in bundle.files[MD]

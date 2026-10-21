@@ -204,6 +204,7 @@ Exceeding one refuses with a diagnostic naming the limit; nothing required is si
 | Reference-mode file (hash only) | 67,108,864 bytes |
 | Rendered output, per file | 1,048,576 bytes |
 | Completion manifest, when read back | 1,048,576 bytes |
+| Files listed by a completion manifest | 8 |
 
 An optional (`required: false`) reference that exceeds an embed limit is listed as not embedded, with the reason.
 A required reference that exceeds a limit blocks readiness, and `render` produces no output rather than a short one.
@@ -259,7 +260,7 @@ With `--out DIR` (default format `both`) the command publishes one **bundle**:
 
 `--out -` with `--format md` or `--format json` writes that one document to standard output and no sidecar.
 The package file is never modified by `render`.
-`render` prints its `wrote` lines only after the whole bundle was published and verified.
+`render` prints its `wrote` lines only after the whole bundle was published and verified as the one this command wrote.
 
 **Publication.** The data files are written first and the manifest last.
 
@@ -268,23 +269,36 @@ The package file is never modified by `render`.
 - With `--force`, it first removes the old manifest, so the old completion marker can never vouch for new data, then replaces each data file atomically through a uniquely named temporary file, and creates the manifest exclusively last.
   If another writer published a manifest meanwhile, it removes nothing and reports `output.conflict`.
   Replaced files are not rolled back.
-- After publishing, the command applies the reader rule below to what is on disk and reports `output.conflict` if it does not verify.
+  Replaced files and the new manifest keep the permission bits of the files they replace (section 10).
+- After publishing, the command reads the bundle back under the reader rule below and reports `output.conflict` if it does not verify, or if it verifies but is not the bundle this command wrote.
 - Unrelated files in the directory, including other stages' bundles, are never touched.
 
-**Reader rule.** A bundle is complete only if all of these hold, which `omnitient.store.check_bundle` implements:
+**Reader rule.** A bundle is complete only if all of these hold:
 
-1. `handoff-<stage>.meta.json` exists, is a regular file and is valid JSON of schema `omnitient/handoff-manifest` version 1;
-2. its `outputs` object is not empty and every key is a plain file name in the same directory;
+1. `handoff-<stage>.meta.json` exists, is a regular file and is valid JSON of schema `omnitient/handoff-manifest` version 1 (an integer, not `true`);
+2. its `outputs` object lists 1 to 8 files, and every key is a plain file name in the same directory (no `/`, no NUL, not `.` or `..`);
 3. each listed file is a regular file of at most 1,048,576 bytes whose SHA-256 equals the listed value.
 
 Files not listed are not part of the bundle.
+
+`omnitient.store.read_bundle` implements the rule and returns what it verified: the parsed manifest and the bytes of each listed file.
+It reads the manifest once and each listed file once, and hashes exactly the bytes it returns.
+So everything it returns matches one manifest, written by one writer, even if another writer replaces files while or after it reads; a replacement while it reads makes it fail instead.
+Use the returned bytes.
+Verifying a bundle and then opening its files again by name is not covered, because a `--force` run can replace them in between.
+`omnitient.store.check_bundle` reports the same problems without returning data; an empty result says only that the files verified while they were read.
+A successful read says nothing about what is on disk afterwards.
 A copy of a handoff without its sidecar cannot be verified by this rule; the sidecar holds host paths and is not meant to be committed, so committed handoffs (such as the example's) are plain documents.
 
 **Interrupted or mixed bundles.** An interrupted write leaves data files and no manifest, or a manifest that fails to parse or verify.
 Treat any bundle that fails the reader rule as incomplete: do not use it.
 Recover by running the same `render` command again with `--force` (this works whether the manifest is missing, stale or mismatched); alternatively delete the bundle's files by hand.
 A no-clobber run that finds data files without a manifest says that an earlier write was probably interrupted.
-Concurrent `--force` runs for the same bundle are not serialised, so one of them can fail with `output.conflict`; a reader that applies the rule only accepts files that match one writer's manifest, never a mixture.
+Concurrent `--force` runs for the same bundle are not serialised.
+Either or both of them can fail with `output.conflict`, and the files they leave can be a mixture of both writers' data with no manifest that verifies it.
+A run that succeeded can have its bundle replaced or broken by the other run afterwards: success means only that the bundle it wrote verified when it read it back.
+In every case, a reader that uses the bytes `read_bundle` returns gets one writer's complete set of files or a refusal, never a mixture.
+Re-run the command to recover.
 There is no lock file, journal or rollback.
 
 ### 8.5 JSON handoff
@@ -319,10 +333,13 @@ Packages are plain files; there is no database.
 - Creation uses exclusive create and fails if the path exists.
 - Every file the tool reads that someone else controls (package, roots file, context file, and the package again during an update) is read through one routine: opened without blocking, required to be a regular file by checking the open descriptor, and read up to its bound.
   A FIFO, device or directory is refused, never read.
-- Every in-place update (`approve`, `evidence add`, `context add`, `context pin`) follows one routine: read the file and remember its SHA-256; compute the new package and verify it is schema-valid; take an exclusive lock file (`PACKAGE.lock`); re-read the file with the same type and size bounds and abort with `store.conflict` if it is no longer a regular file, is larger than the package limit or its SHA-256 changed; write a uniquely named temporary file in the same directory and atomically replace the package; release the lock.
-- A lock file left by a crash must be removed by hand; the diagnostic says so.
+- Every in-place update (`approve`, `evidence add`, `context add`, `context pin`) follows one routine: read the file and remember its SHA-256; compute the new package and verify it is schema-valid; take an exclusive lock file (`PACKAGE.lock`) and remember its device and inode; re-read the file with the same type and size bounds and abort with `store.conflict` if it is no longer a regular file, is larger than the package limit or its SHA-256 changed; write a uniquely named temporary file in the same directory and atomically replace the package; remove the lock file if it is still the one this update created.
+- A lock file left by a crash must be removed by hand; the diagnostic says so, and says to check first whether the crashed update already changed the package, since repeating an `approve` or `evidence add` appends a second record.
+- A replaced file (a package during an update, or a handoff file or manifest under `render --force`) keeps the read, write and execute bits of the file it replaces; the temporary file gets them before any data is written.
+  Set-user-ID, set-group-ID and sticky bits are never copied, and the owner, group, ACLs and extended attributes are not carried over: the new file belongs to the user running the command.
+  A new file (a scaffold, a lock file, or an output that did not exist) is created with mode 0666 minus the umask.
 - Temporary files are created exclusively under names that include the process id and random bytes, and a failed creation never removes anything.
-  Cleanup removes only a file the operation created, recognised by device and inode.
+  Cleanup, including the release of a lock, removes only a file the operation created, recognised by device and inode.
   A crash can leave a `.NAME.tmp-*` file, which is safe to delete.
 - Evidence and approval updates are append-only: the command verifies that the covered-content digest and all earlier evidence and approval records are unchanged before writing.
 - The tool writes canonical formatting (two-space indent, fixed key order, trailing newline). Hand-edited files remain valid and are normalised the next time the tool writes them.
@@ -364,7 +381,8 @@ Every item is an offline pytest test; none reads production state, credentials o
 | Evidence can be added without rewriting history | `test_evidence.py`, `test_render.py::test_evidence_changes_only_the_evidence_section`, `test_cli.py::test_full_workflow_from_scaffold_to_ready_handoff` |
 | Malformed input, unsafe paths, overwrites and output limits behave predictably | `test_schema.py` (including malformed URLs), `test_context.py` (symlinks, forbidden files, size limits, host mapping, roots-file duplicate keys, nesting and FIFOs), `test_store.py`, `test_render.py::test_output_limit_refuses_instead_of_truncating`, `test_cli.py::test_render_never_overwrites_without_force` |
 | Reads of files that others control are bounded and never block; cleanup touches only files the operation created | `test_store.py::test_reread_during_update_is_bounded_like_the_first_read`, `test_store.py::test_reread_during_update_does_not_block_on_a_fifo`, `test_store.py::test_preexisting_file_at_the_old_temporary_name_survives_an_update`, `test_store.py::test_exhausted_temporary_names_fail_without_deleting_the_colliding_file`, `test_context.py::TestHostMapping` |
-| A handoff bundle is complete only when its manifest verifies; replacement and races never leave a blessed mixture | `test_store.py` (publication order, losing races, interrupted replacement, reader rule), `test_cli.py::test_render_publishes_a_bundle_whose_manifest_verifies`, `test_cli.py::test_forced_render_replaces_a_bundle_and_keeps_unrelated_files`, `test_cli.py::test_render_reports_an_interrupted_bundle_and_force_completes_it` |
+| A handoff bundle is complete only when its manifest verifies; replacement and races never leave a blessed mixture, and a reader uses the bytes it verified | `test_store.py` (publication order, losing races, interrupted replacement, reader rule, `test_a_replacement_while_reading_fails_instead_of_mixing`, `test_read_bundle_returns_the_bytes_it_verified`), `test_cli.py::test_render_publishes_a_bundle_whose_manifest_verifies`, `test_cli.py::test_forced_render_replaces_a_bundle_and_keeps_unrelated_files`, `test_cli.py::test_render_reports_an_interrupted_bundle_and_force_completes_it`, `test_cli.py::test_concurrent_forced_renders_can_both_fail_and_never_verify_a_mixture`, `test_cli.py::test_a_forced_render_whose_bundle_was_replaced_does_not_claim_it` |
+| Replacing a file keeps its permission bits, never special bits; a lock is released only by the update that took it | `test_store.py::test_update_keeps_the_package_file_mode`, `test_store.py::test_replacement_never_copies_special_mode_bits`, `test_store.py::test_forced_bundle_keeps_the_modes_of_the_files_it_replaces`, `test_store.py::test_new_files_follow_the_umask`, `test_store.py::test_a_failed_mode_change_leaves_the_package_and_no_stray_files`, `test_store.py::test_lock_release_removes_only_the_lock_this_update_took` |
 | Context Markdown and package text cannot impersonate or hide control sections under CommonMark (parsed with `markdown-it-py`) | `test_render.py::test_context_cannot_forge_control_sections`, `test_render.py::test_package_text_cannot_forge_control_sections`, `test_render.py::test_unclosed_html_comment_in_a_list_entry_does_not_hide_later_sections`, `test_render.py::test_code_span_round_trips_through_a_commonmark_parser`, `test_render.py::test_fenced_text_round_trips_and_leaves_the_document_intact`, `test_render.py::test_fence_is_longer_than_any_backtick_run` |
 | The installed console script and packaged data work outside the source cwd | `test_packaging.py` (marker `packaging`) |
 | No production state, credentials or external services are contacted | An autouse fixture in `conftest.py` makes any socket connection fail the test; tests use temporary directories and a temporary `HOME`; `test_packaging.py` builds with `--no-build-isolation --no-index`; `test_cli.py::test_cli_touches_nothing_but_its_targets` |
