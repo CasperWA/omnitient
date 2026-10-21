@@ -42,7 +42,7 @@
     "work_package": "o2-git-pinned-context",
     "title": "Verify pinned Git revisions of context locally",
     "stage": "draft",
-    "content_digest": "1e6239c9ce6c819b19553e98b7cd9593b6e59495d40364cf4bcdf08ac7e22b02",
+    "content_digest": "ddad24acb30c13c0bed6774a07ca392f39b0c16aa568573d77594ab4eacd1f0a",
     "objective": "O1 records the Git revision a context file was taken from but never checks it.\nLet a package verify, from a local repository only, that a pinned revision exists and that the file at that revision has the expected digest, so a handoff can say whether the supplied content really corresponds to the pinned revision.\nVerification is read-only and optional; packages without git provenance behave exactly as in O1.",
     "scope": [
       "Verify that a context reference's supplied git revision exists in a local repository mapped to the reference's root, and that the file at that revision has the expected digest.",
@@ -143,7 +143,7 @@
       "mode": "embed",
       "purpose": "The O1 contract this slice extends: section 3.1 defines git provenance and section 6 context resolution.",
       "git": {
-        "revision": "17717c40f1a38aa6dbb7f7c82bd78b49bbb905ae",
+        "revision": "e3ce6ef8a7db91ce2dde732f8da5203bdf00614e",
         "repository": "omnitient"
       },
       "status": "ok",

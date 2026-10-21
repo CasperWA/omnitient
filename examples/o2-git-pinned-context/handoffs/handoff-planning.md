@@ -8,7 +8,7 @@
 
 - Target stage: planning
 - Package stage: draft
-- Revision (content digest): `1e6239c9ce6c819b19553e98b7cd9593b6e59495d40364cf4bcdf08ac7e22b02`
+- Revision (content digest): `ddad24acb30c13c0bed6774a07ca392f39b0c16aa568573d77594ab4eacd1f0a`
 - Approval: not required for a planning handoff
 
 ### Blockers
@@ -130,7 +130,7 @@ Approval records are workflow provenance (who recorded approval of which revisio
 - Expected SHA-256: `28a61faaf28846674ff49e192b281ebd640e2f69dea9f05cb22213767e7829f8`
 - Required: yes; mode: embed
 - Purpose: `The O1 contract this slice extends: section 3.1 defines git provenance and section 6 context resolution.`
-- Git provenance (supplied, not verified): revision `17717c40f1a38aa6dbb7f7c82bd78b49bbb905ae`, repository `omnitient`
+- Git provenance (supplied, not verified): revision `e3ce6ef8a7db91ce2dde732f8da5203bdf00614e`, repository `omnitient`
 - Status: embedded; digest verified; 32688 bytes.
 
 ````text
@@ -922,7 +922,7 @@ def evaluate_all(
 ## 11. Provenance
 
 - Package: `omnitient/provenance/o2-git-pinned-context`
-- Revision: `1e6239c9ce6c819b19553e98b7cd9593b6e59495d40364cf4bcdf08ac7e22b02`
+- Revision: `ddad24acb30c13c0bed6774a07ca392f39b0c16aa568573d77594ab4eacd1f0a`
 - Package schema: `omnitient/work-package` version 1
 - Handoff schema: `omnitient/handoff` version 1
 - This document contains no generation time and no host paths; identical inputs give identical output.
