@@ -8,7 +8,7 @@
 
 - Target stage: planning
 - Package stage: draft
-- Revision (content digest): `e215b2ffe9ffaf6488c76d193515fa62673938ea36612d91316b5ddab1539cae`
+- Revision (content digest): `cf2dc335891ba74921f171c4b5f39e7eb2aacbd796f50e4fe1310b4e0d1a7259`
 - Approval: not required for a planning handoff
 
 ### Blockers
@@ -130,7 +130,7 @@ Approval records are workflow provenance (who recorded approval of which revisio
 - Expected SHA-256: `20565c22f75f7ecd7ba44001a7828b0b3ea543d524260ac388c2caee757b773e`
 - Required: yes; mode: embed
 - Purpose: `The O1 contract this slice extends: section 3.1 defines git provenance and section 6 context resolution.`
-- Git provenance (supplied, not verified): revision `e3ce6ef8a7db91ce2dde732f8da5203bdf00614e`, repository `omnitient`
+- Git provenance (supplied, not verified): revision `567b1417a4b3a7d24a6487777ef251ca4e386bee`, repository `omnitient`
 - Status: embedded; digest verified; 32825 bytes.
 
 ````text
@@ -521,7 +521,7 @@ Free-threaded and JIT builds, Windows and macOS, and other implementations were 
 - Expected SHA-256: `8c4c7d15c16877212c1082696b671a1fb5ad0c705fe85637191bbc59a990b537`
 - Required: yes; mode: embed
 - Purpose: `Where context resolution lives; verification of a pinned revision would hook in here.`
-- Git provenance (supplied, not verified): revision `17717c40f1a38aa6dbb7f7c82bd78b49bbb905ae`, repository `omnitient`
+- Git provenance (supplied, not verified): revision `567b1417a4b3a7d24a6487777ef251ca4e386bee`, repository `omnitient`
 - Status: embedded; digest verified; 9307 bytes.
 
 ````text
@@ -797,7 +797,7 @@ def digest_file(
 - Expected SHA-256: `be26fece6229c22bc655fd5249f4568692175066ce8e571a2d7e22be92589022`
 - Required: no; mode: embed
 - Purpose: `Where any new readiness diagnostics would be added.`
-- Git provenance (supplied, not verified): revision `b7af9941255fb512fa2d774e8d57c69ffbc249b9`, repository `omnitient`
+- Git provenance (supplied, not verified): revision `567b1417a4b3a7d24a6487777ef251ca4e386bee`, repository `omnitient`
 - Status: embedded; digest verified; 4191 bytes.
 
 ````text
@@ -939,7 +939,7 @@ def evaluate_all(
 ## 11. Provenance
 
 - Package: `omnitient/provenance/o2-git-pinned-context`
-- Revision: `e215b2ffe9ffaf6488c76d193515fa62673938ea36612d91316b5ddab1539cae`
+- Revision: `cf2dc335891ba74921f171c4b5f39e7eb2aacbd796f50e4fe1310b4e0d1a7259`
 - Package schema: `omnitient/work-package` version 1
 - Handoff schema: `omnitient/handoff` version 1
 - This document contains no generation time and no host paths; identical inputs give identical output.
