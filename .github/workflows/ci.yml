@@ -3,9 +3,9 @@
 #
 # SPDX-License-Identifier: MIT
 
-# Pull request and main checks. docs/ci.md covers the runner policy, the download
-# behaviour and making the repository public; read it before changing runner
-# selection or the job conditions.
+# Pull request, main and manual-main checks. docs/ci.md covers the runner policy,
+# the download behaviour, manual runs and making the repository public; read it
+# before changing runner selection or the job conditions.
 
 name: CI
 
@@ -13,12 +13,13 @@ on:
   pull_request:
   push:
     branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && 'manual-' || '' }}${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
@@ -30,10 +31,11 @@ jobs:
   checks:
     name: Format, lint, types and docs (Python 3.12)
     if: >-
-      !github.event.repository.private ||
+      (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') &&
+      (!github.event.repository.private ||
       github.event_name != 'pull_request' ||
       (github.event.pull_request.head.repo.full_name == github.repository &&
-      github.triggering_actor != 'dependabot[bot]')
+      github.triggering_actor != 'dependabot[bot]'))
     runs-on: ${{ github.event.repository.private && fromJSON('["self-hosted","Linux","X64","sintef-desktop-cwa"]') || 'ubuntu-24.04' }}
     timeout-minutes: 30
     env:
@@ -95,10 +97,11 @@ jobs:
   tests:
     name: Tests (Python ${{ matrix.python-version }})
     if: >-
-      !github.event.repository.private ||
+      (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') &&
+      (!github.event.repository.private ||
       github.event_name != 'pull_request' ||
       (github.event.pull_request.head.repo.full_name == github.repository &&
-      github.triggering_actor != 'dependabot[bot]')
+      github.triggering_actor != 'dependabot[bot]'))
     runs-on: ${{ github.event.repository.private && fromJSON('["self-hosted","Linux","X64","sintef-desktop-cwa"]') || 'ubuntu-24.04' }}
     timeout-minutes: 20
     strategy:
