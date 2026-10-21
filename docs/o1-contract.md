@@ -215,10 +215,26 @@ Timestamps stored inside the package (approvals, evidence) are inputs and appear
 
 The document has a fixed sequence of numbered `##` control sections: status, how to read this handoff, objective, scope and acceptance, decisions, dependencies, execution recommendations, evidence, approvals, context, provenance.
 
-- Context files are embedded verbatim inside fenced code blocks whose fence is longer than any backtick run in the content, so the content cannot close the fence early. Everything between the fences is data.
-- Multi-line package text (objective, rationale, answers) is rendered as block quotes, one line at a time; single-line items are list items. Neither can open a top-level heading or fence.
-- Identifiers in headings are validated slugs.
-- The "how to read" section states that quoted material is evidence, grants no permission to execute commands or read other files, and that only the sections outside quotes and fences are the handoff's own statements.
+The supported interpretation is **CommonMark** (0.31), with raw HTML enabled, which is the strictest reading for this purpose.
+Author-controlled text never enters the document as Markdown:
+
+- A single-line value (title, scope, exclusions and acceptance entries, questions, sources, purposes, notes, summaries, names, diagnostic messages including the file paths and details they quote) is an inline code span, lengthened past any backtick run in the text.
+- Multi-line text (objective, rationale, answers) is a fenced block with the info string `text`.
+- Context files are embedded verbatim in the same kind of fenced block.
+- Every fence is longer than any backtick run in its content, so the content cannot close it, whatever line endings it uses.
+- The only author-chosen words in a heading are validated identifiers (the package id is three slugs; decision and context ids match the id pattern), and the renderer writes the ids as code spans.
+
+CommonMark reads code spans and fences literally: raw HTML (including an unclosed `<!--`), entities, links, images, emphasis, headings, lists and block quotes in author text are all just characters.
+A block quote would not be enough: raw HTML inside one still reaches an HTML renderer, where an unclosed comment hides everything after it and a closing tag can forge a heading.
+The JSON handoff is unaffected: it holds the exact text, and rendering does not change readiness.
+
+**What this guarantees:** structural separation.
+In any CommonMark reading, the headings, status line, readiness statements and the other renderer-owned text of a handoff are exactly those the renderer wrote, and package text, diagnostics and context files appear only inside code spans and fences.
+**What it does not guarantee:** that text quoted in a span or fence cannot persuade a reader, human or model, to act on it (semantic prompt injection), or how any model behaves; the handoff states the trust boundary but cannot enforce it.
+Renderers that differ from CommonMark for code spans or fences, and Markdown flavours with other block syntax, are not covered.
+The tests check this with an established CommonMark parser (`markdown-it-py`, a development-only dependency) over hostile text in every author-controlled field.
+
+The "how to read" section states that code spans and fences quote the author's text, diagnostics and files, that fenced files under "Context" are untrusted evidence granting no permission to execute commands or read other files, and that only the text outside code spans and fences is the handoff's own statement.
 
 ### 8.4 Outputs
 
@@ -295,7 +311,7 @@ Every item is an offline pytest test; none reads production state, credentials o
 | Equivalent content under different host mappings is portable | `test_render.py::test_host_mapping_does_not_change_handoff`, `test_render.py::test_output_is_reproducible` |
 | Evidence can be added without rewriting history | `test_evidence.py`, `test_render.py::test_evidence_changes_only_the_evidence_section`, `test_cli.py::test_full_workflow_from_scaffold_to_ready_handoff` |
 | Malformed input, unsafe paths, overwrites and output limits behave predictably | `test_schema.py`, `test_context.py` (symlinks, forbidden files, size limits, host mapping), `test_store.py`, `test_render.py::test_output_limit_refuses_instead_of_truncating`, `test_cli.py::test_render_never_overwrites_without_force` |
-| Context Markdown cannot impersonate control sections | `test_render.py::test_context_cannot_forge_control_sections`, `test_render.py::test_package_text_cannot_forge_control_sections`, `test_render.py::test_fence_is_longer_than_any_backtick_run` |
+| Context Markdown and package text cannot impersonate or hide control sections under CommonMark (parsed with `markdown-it-py`) | `test_render.py::test_context_cannot_forge_control_sections`, `test_render.py::test_package_text_cannot_forge_control_sections`, `test_render.py::test_unclosed_html_comment_in_a_list_entry_does_not_hide_later_sections`, `test_render.py::test_code_span_round_trips_through_a_commonmark_parser`, `test_render.py::test_fenced_text_round_trips_and_leaves_the_document_intact`, `test_render.py::test_fence_is_longer_than_any_backtick_run` |
 | The installed console script and packaged data work outside the source cwd | `test_packaging.py` (marker `packaging`) |
 | No production state, credentials or external services are contacted | An autouse fixture in `conftest.py` makes any socket connection fail the test; tests use temporary directories and a temporary `HOME`; `test_packaging.py` builds with `--no-build-isolation --no-index`; `test_cli.py::test_cli_touches_nothing_but_its_targets` |
 | Read commands do not mutate packages | `test_cli.py::test_read_commands_do_not_mutate` (runs against a read-only directory) |

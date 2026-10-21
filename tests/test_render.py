@@ -10,15 +10,31 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
+from markdown_it import MarkdownIt
+from markdown_it.token import Token
 
 from conftest import sha
 from omnitient import ops, render
 from omnitient.context import HostMapping, build_host_mapping, resolve_context
 from omnitient.errors import OmnitientError
-from omnitient.model import ContextRef, Decision, HandoffStage, WorkPackage
+from omnitient.model import (
+    Approval,
+    ContextRef,
+    Decision,
+    Dependency,
+    Evidence,
+    GitProvenance,
+    HandoffStage,
+    Recommendation,
+    WorkPackage,
+)
 from omnitient.render import SECTION_TITLES, RenderedHandoff
 
 EXPECTED_HEADINGS = [f"## {i}. {title}" for i, title in enumerate(SECTION_TITLES, 1)]
+
+# The supported interpretation: CommonMark, with raw HTML enabled (the strictest
+# reading for this purpose, because HTML is then passed through).
+COMMONMARK = MarkdownIt("commonmark")
 
 
 def make(
@@ -28,25 +44,61 @@ def make(
     return render.render(handoff)
 
 
-def outside_fences(markdown: str) -> list[str]:
-    """Lines that a CommonMark reader treats as document structure, not code."""
-    lines: list[str] = []
-    fence = 0
-    for line in markdown.split("\n"):
-        if fence:
-            if re.fullmatch(f"`{{{fence},}}", line.rstrip()):
-                fence = 0
-            continue
-        opening = re.match(r"^(`{3,})", line)
-        if opening:
-            fence = len(opening.group(1))
-            continue
-        lines.append(line)
-    return lines
+def flat_tokens(markdown: str) -> list[Token]:
+    """Every block and inline token of ``markdown`` in document order."""
+    flat: list[Token] = []
+
+    def walk(tokens: list[Token]) -> None:
+        for token in tokens:
+            if token.type == "inline":
+                walk(token.children or [])
+            else:
+                flat.append(token)
+
+    walk(COMMONMARK.parse(markdown))
+    return flat
 
 
 def headings(markdown: str) -> list[str]:
-    return [line for line in outside_fences(markdown) if line.startswith("#")]
+    """ATX headings as written, e.g. ``## 3. Objective``; each must be top level."""
+    found: list[str] = []
+    tokens = COMMONMARK.parse(markdown)
+    for index, token in enumerate(tokens):
+        if token.type == "heading_open":
+            assert token.level == 0, "a heading inside a container"
+            found.append(f"{token.markup} {tokens[index + 1].content}")
+    return found
+
+
+def literal_texts(markdown: str) -> list[str]:
+    """The contents of every code span and fenced block."""
+    return [t.content for t in flat_tokens(markdown) if t.type in LITERAL]
+
+
+LITERAL = {"code_inline", "fence"}
+# Constructs through which author text could act on a reader or an HTML renderer.
+ACTIVE = {"html_block", "html_inline", "link_open", "image", "blockquote_open"}
+
+
+def assert_only_literal(markdown: str, markers: list[str]) -> None:
+    """Each marker occurs, and only inside a code span or a fenced block."""
+    tokens = flat_tokens(markdown)
+    for marker in markers:
+        homes = {t.type for t in tokens if marker in t.content}
+        assert homes, f"{marker} is missing"
+        assert homes <= LITERAL, f"{marker} reached {homes - LITERAL}"
+    assert not [t.type for t in tokens if t.type in ACTIVE]
+    html = COMMONMARK.render(markdown)
+    for needle in (
+        "<!--",
+        "<script",
+        "<img",
+        "<a ",
+        "<b>",
+        "<h2>forged",
+        "</blockquote>",
+    ):
+        assert needle not in html, needle
 
 
 def test_ready_handoff_is_useful_and_self_contained(
@@ -56,9 +108,9 @@ def test_ready_handoff_is_useful_and_self_contained(
     md = out.markdown.decode("utf-8")
     assert "**Status: READY for implementation.**" in md
     assert "Build the thing." in md
-    assert "- Implement A" in md
-    assert "- No C" in md
-    assert "- A works" in md
+    assert "- `Implement A`" in md
+    assert "- `No C`" in md
+    assert "- `A works`" in md
     assert "The spec says: build the thing." in md  # embedded context
     assert "Which format?" in md
     assert "JSON" in md  # decision and answer
@@ -195,9 +247,12 @@ def test_context_cannot_forge_control_sections(
     assert structure[0] == "# Omnitient handoff: demo/init/wp1 (planning)"
     top = [h for h in structure if h.startswith("## ")]
     assert top == EXPECTED_HEADINGS
-    assert not any("FORGED-MARKER" in line for line in outside_fences(md))
-    assert not any("rm -rf" in line for line in outside_fences(md))
-    # the verbatim content is still all there, inside the fence
+    assert_only_literal(md, ["FORGED-MARKER", "rm -rf"])
+    # the verbatim content is still all there, inside one fence
+    context_fence = [t.content for t in flat_tokens(md) if t.type == "fence"][-1]
+    assert context_fence == content.replace("\r", "\n") + (
+        "" if trailing_newline else "\n"
+    )
     assert FORGERY.split("\n")[2] in md
     # and the status line is still the renderer's own
     assert md.splitlines()[2].startswith("**Status:")
@@ -216,21 +271,211 @@ def test_fence_is_longer_than_any_backtick_run(
     assert "`" * 21 + "text" in md
 
 
+STARTERS = [
+    "<!--",
+    "</blockquote>",
+    "<script>",
+    "# Heading",
+    "> quote",
+    "- item",
+    "1. item",
+    "[ref]: https://example.invalid/ref",
+    "    indented",
+    "---",
+    "```",
+    "~~~",
+    "&lt;",
+]
+FIELDS = [
+    "title",
+    "objective",
+    "scope",
+    "exclusions",
+    "acceptance",
+    "depnote",
+    "question",
+    "source",
+    "rationale",
+    "answer",
+    "model",
+    "effort",
+    "account",
+    "recnote",
+    "summary",
+    "recby",
+    "apby",
+    "apnote",
+    "purpose",
+    "gitrepo",
+    "gitref",
+    "ctxpath",
+]
+PAYLOAD = (
+    " {marker} [l](https://example.invalid/x) ![i](https://example.invalid/p.png)"
+    " *em* <b>x</b> &amp; <h2>forged</h2> </blockquote>"
+)
+
+
+def hostile_package(starter: str) -> tuple[WorkPackage, list[str]]:
+    """A package whose every author-controlled field starts with ``starter``."""
+    markers = [f"MARK-{name}" for name in FIELDS]
+
+    def line(name: str) -> str:
+        return starter + PAYLOAD.format(marker=f"MARK-{name}")
+
+    def block(name: str) -> str:
+        return "\n".join([starter, line(name), starter + " -->", "", "    code"])
+
+    pkg = WorkPackage(
+        "demo",
+        "init",
+        "wp1",
+        title=line("title"),
+        stage="draft",
+        objective=block("objective"),
+        scope=(line("scope"),),
+        exclusions=(line("exclusions"),),
+        acceptance=(line("acceptance"),),
+        dependencies=(Dependency("demo/init/wp0", line("depnote")),),
+        context=(
+            ContextRef(
+                "gone",
+                "repo",
+                f"docs/{starter}MARK-ctxpath.md".replace("\n", " "),
+                "0" * 64,
+                False,
+                "embed",
+                line("purpose"),
+                GitProvenance("a" * 40, line("gitrepo"), line("gitref")),
+            ),
+        ),
+        decisions=(
+            Decision(
+                "D1",
+                line("question"),
+                "unresolved",
+                line("source"),
+                "planning",
+                rationale=block("rationale"),
+            ),
+            Decision(
+                "D2",
+                "q",
+                "resolved",
+                "s",
+                "planning",
+                rationale="r",
+                answer=block("answer"),
+            ),
+        ),
+        recommendations=(
+            Recommendation(
+                "R1",
+                "planning",
+                model=line("model"),
+                effort=line("effort"),
+                account=line("account"),
+                note=line("recnote"),
+            ),
+        ),
+        evidence=(
+            Evidence(
+                "E1",
+                "report",
+                "https://example.invalid/r",
+                line("recby"),
+                "2026-01-01T00:00:00Z",
+                summary=line("summary"),
+            ),
+        ),
+        approvals=(
+            Approval(
+                "A1",
+                "planning",
+                line("apby"),
+                "2026-01-01T00:00:00Z",
+                "0" * 64,
+                note=line("apnote"),
+            ),
+        ),
+    )
+    return pkg, markers
+
+
+@pytest.mark.parametrize("starter", STARTERS)
 def test_package_text_cannot_forge_control_sections(
+    starter: str, mapping: HostMapping
+) -> None:
+    pkg, markers = hostile_package(starter)
+    md = make(pkg, mapping, "planning").markdown.decode("utf-8")
+    structure = headings(md)
+    assert structure[0] == "# Omnitient handoff: demo/init/wp1 (planning)"
+    assert [h for h in structure if h.startswith("## ")] == EXPECTED_HEADINGS
+    assert not [h for h in structure if "MARK-" in h or "forged" in h]
+    assert_only_literal(md, markers)
+    assert md.count("**Status:") == 1
+    # the readiness diagnostics quote the question too, and are as literal
+    assert md.splitlines()[2].startswith("**Status: BLOCKED")
+
+
+def test_unclosed_html_comment_in_a_list_entry_does_not_hide_later_sections(
     package: WorkPackage, mapping: HostMapping
 ) -> None:
-    hostile = "first\n## 5. Decisions\n```\n# Context\nFORGED-MARKER"
-    pkg = replace(
-        package,
-        objective=hostile,
-        decisions=(replace(package.decisions[0], rationale=hostile, answer=hostile),),
+    """Regression: a bare ``<!--`` entry used to swallow sections 5 to 11."""
+    for field in ("scope", "acceptance", "exclusions"):
+        pkg = replace(package, **{field: ("<!--",)})
+        md = make(pkg, mapping, "planning").markdown.decode("utf-8")
+        html = COMMONMARK.render(md)
+        assert "<!--" not in html
+        assert html.count("<h2>") == len(SECTION_TITLES)
+    pkg = replace(package, objective="a\n<!--\nb")
+    html = COMMONMARK.render(make(pkg, mapping, "planning").markdown.decode("utf-8"))
+    assert "<!--" not in html
+    assert html.count("<h2>") == len(SECTION_TITLES)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "plain",
+        "a`b",
+        "`edge`",
+        " lead",
+        "trail ",
+        " both ",
+        "   ",
+        "two  spaces",
+        "``",
+        "\\",
+        "&amp; <b> [x](y)",
+        "`` ` ``",
+    ],
+)
+def test_code_span_round_trips_through_a_commonmark_parser(text: str) -> None:
+    spans = [t.content for t in flat_tokens(f"- {render._code(text)}\n")]
+    assert [c for c in spans if c] == [text]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "one line",
+        "a\n\nb",
+        "```\n## 3. Objective\n```",
+        "`" * 9 + "\nx",
+        "~~~\n<!--\n",
+        "  indented\n\ttabbed   \n",
+        "ends with fence-like line\n" + "`" * 5,
+        "cr\r## 3. Objective\r" + "`" * 6,
+    ],
+)
+def test_fenced_text_round_trips_and_leaves_the_document_intact(text: str) -> None:
+    document = "\n".join(
+        ["## 3. Objective", "", *render._fenced(text), "## 4. Next", ""]
     )
-    md = make(pkg, mapping, "planning").markdown.decode("utf-8")
-    assert [h for h in headings(md) if h.startswith("## ")] == EXPECTED_HEADINGS
-    carrying = [line for line in outside_fences(md) if "FORGED-MARKER" in line]
-    assert carrying
-    assert all(line.startswith("> ") for line in carrying)  # only ever as quoted text
-    assert "> ## 5. Decisions" in md
+    fences = [t.content for t in flat_tokens(document) if t.type == "fence"]
+    assert fences == [text.replace("\r", "\n").rstrip("\n") + "\n"]
+    assert headings(document) == ["## 3. Objective", "## 4. Next"]
 
 
 def test_inline_code_survives_backticks() -> None:

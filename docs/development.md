@@ -48,12 +48,13 @@ Every test is offline and works in temporary directories.
 An autouse fixture makes any attempt to open a network connection fail the test.
 The packaging test builds a wheel with `--no-build-isolation --no-index`, installs it into a throwaway virtual environment and runs the console script from another directory.
 It needs `flit_core`, which the `dev` extra installs.
+The render tests parse every handoff with `markdown-it-py` (a CommonMark parser, installed by the `dev` extra) to check that author text cannot change the document's structure; it is a test dependency only.
 
 To try another interpreter, create a disposable environment outside the repository and install the same test dependencies:
 
 ```bash
 uv venv --python /usr/bin/python3.14 --no-python-downloads --seed /tmp/omnitient-py314
-/tmp/omnitient-py314/bin/python -m pip install "pytest~=9.1" "pytest-cov~=7.1" "flit_core>=3.4,<4"
+/tmp/omnitient-py314/bin/python -m pip install "pytest~=9.1" "pytest-cov~=7.1" "flit_core>=3.4,<4" "markdown-it-py~=4.2"
 /tmp/omnitient-py314/bin/python -m pip install --no-build-isolation -e .
 /tmp/omnitient-py314/bin/python -m pytest
 ```

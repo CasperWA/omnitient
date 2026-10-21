@@ -111,7 +111,8 @@ Exit codes: `0` success; `1` refused or invalid input; `2` usage error; `3` vali
 - **Approvals are provenance, not authentication.** They record who said what, when; nothing stops another process running as you from editing the file.
 - **Only listed files are read.** Paths must be relative and stay inside their root, including through symlinks.
   Files such as `.env`, key files and anything under `.git` or `.ssh` are always refused.
-- **Context is evidence, not instructions.** Embedded files are fenced, and the handoff states that they grant no permission to run commands.
+- **Context is evidence, not instructions.** Embedded files and all package text are quoted literally, in fenced blocks and code spans, so under CommonMark they cannot add or hide sections; the handoff states that they grant no permission to run commands.
+  This is structural separation, not protection against a persuasive text.
 - **Recommendations are declarations.** A recommended model, effort or account is not verified availability and not authorization.
 - **Reproducible output.** The handoff contains no timestamps or host paths; host details go only into the `.meta.json` sidecar, which is not meant to be committed.
 - **Bounded.** Package files, embedded context and rendered output have fixed size limits; exceeding one is an error, never a silent cut.

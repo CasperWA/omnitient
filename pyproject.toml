@@ -22,6 +22,7 @@ classifiers = [
 # Black, Ruff, mypy and Bandit are deliberately absent: pre-commit runs them.
 dev = [
     "flit_core >=3.4,<4",
+    "markdown-it-py ~=4.2",  # parses handoffs in tests (CommonMark); not a runtime dependency
     "pre-commit ~=4.7",
     "pytest ~=9.1",
     "pytest-cov ~=7.1",
