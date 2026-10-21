@@ -285,15 +285,15 @@ The package file is never modified by `render`.
 3. each listed file is a regular file of at most 1,048,576 bytes whose SHA-256 equals the listed value.
 
 Files not listed are not part of the bundle.
+A copy of a handoff without its sidecar cannot be verified by this rule; the sidecar holds host paths and is not meant to be committed, so committed handoffs (such as the example's) are plain documents.
 
 `omnitient.store.read_bundle` implements the rule and returns what it verified: the parsed manifest and the bytes of each listed file.
 It reads the manifest once and each listed file once, and hashes exactly the bytes it returns.
-So everything it returns matches one manifest, written by one writer, even if another writer replaces files while or after it reads; a replacement while it reads makes it fail instead.
+So everything it returns matches one manifest, written by one writer, even if another writer replaces files while or after it reads: a file replaced before it is read no longer matches the manifest, and the read fails instead of mixing two writes.
 Use the returned bytes.
 Verifying a bundle and then opening its files again by name is not covered, because a `--force` run can replace them in between.
 `omnitient.store.check_bundle` reports the same problems without returning data; an empty result says only that the files verified while they were read.
 A successful read says nothing about what is on disk afterwards.
-A copy of a handoff without its sidecar cannot be verified by this rule; the sidecar holds host paths and is not meant to be committed, so committed handoffs (such as the example's) are plain documents.
 
 **Interrupted or mixed bundles.** An interrupted write leaves data files and no manifest, or a manifest that fails to parse or verify.
 Treat any bundle that fails the reader rule as incomplete: do not use it.

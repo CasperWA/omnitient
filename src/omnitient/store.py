@@ -348,9 +348,10 @@ def read_bundle(directory: Path, manifest_name: str) -> VerifiedBundle:
 
     The manifest and each listed file are read once, and the bytes returned
     are the bytes that were hashed. So everything returned matches one
-    manifest, even if another writer replaces files during or after the call;
-    a concurrent replacement makes the call fail rather than mix two writes.
-    Opening the files again by name afterwards is not covered.
+    manifest, even if another writer replaces files during or after the call:
+    a file replaced before it is read no longer matches, and the call fails
+    instead of mixing two writes. Opening the files again by name afterwards
+    is not covered.
 
     Raises :class:`IncompleteBundleError` listing every problem found.
     """

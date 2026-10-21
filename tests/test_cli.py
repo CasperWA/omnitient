@@ -453,8 +453,8 @@ def test_markdown_only_render_is_not_refused_for_the_json_size(
     write_package: Callable[..., Path],
     package: WorkPackage,
 ) -> None:
-    # A newline takes one byte in Markdown and two in JSON (an escaped \n), so two files
-    # within every embed limit give a JSON handoff over the output bound.
+    # A newline takes one byte in Markdown and two in JSON (an escaped \n), so
+    # two files within every embed limit give a JSON handoff over the bound.
     blob = b"\n" * 262_144
     refs = []
     for index in range(2):

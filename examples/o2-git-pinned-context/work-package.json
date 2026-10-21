@@ -43,7 +43,7 @@
       "id": "contract",
       "root": "omnitient",
       "path": "docs/o1-contract.md",
-      "sha256": "afab2bcb5f8242ecb55dbcf51cfeb16112ce2901db22cae6a042cea1585df9bd",
+      "sha256": "be930a35ecf98239f4f74edd3b763b3d4d4dd81c108891c2c325ee3f007aa466",
       "required": true,
       "mode": "embed",
       "purpose": "The O1 contract this slice extends: section 3.1 defines git provenance and section 6 context resolution.",

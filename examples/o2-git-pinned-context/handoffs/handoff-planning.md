@@ -8,7 +8,7 @@
 
 - Target stage: planning
 - Package stage: draft
-- Revision (content digest): `d113a98cf739358daddded5b110ba9cc3f7b89b230c3045d985c80d945f7eb74`
+- Revision (content digest): `a55888a384fd7c845e1e6cb82b392c53a5cc6ba90b0c249142841556531f0c17`
 - Approval: not required for a planning handoff
 
 ### Blockers
@@ -127,11 +127,11 @@ Approval records are workflow provenance (who recorded approval of which revisio
 ### Context `contract`
 
 - File: `omnitient:docs/o1-contract.md`
-- Expected SHA-256: `afab2bcb5f8242ecb55dbcf51cfeb16112ce2901db22cae6a042cea1585df9bd`
+- Expected SHA-256: `be930a35ecf98239f4f74edd3b763b3d4d4dd81c108891c2c325ee3f007aa466`
 - Required: yes; mode: embed
 - Purpose: `The O1 contract this slice extends: section 3.1 defines git provenance and section 6 context resolution.`
 - Git provenance (supplied, not verified): revision `567b1417a4b3a7d24a6487777ef251ca4e386bee`, repository `omnitient`
-- Status: embedded; digest verified; 37470 bytes.
+- Status: embedded; digest verified; 37533 bytes.
 
 ````text
 <!--
@@ -421,15 +421,15 @@ The package file is never modified by `render`.
 3. each listed file is a regular file of at most 1,048,576 bytes whose SHA-256 equals the listed value.
 
 Files not listed are not part of the bundle.
+A copy of a handoff without its sidecar cannot be verified by this rule; the sidecar holds host paths and is not meant to be committed, so committed handoffs (such as the example's) are plain documents.
 
 `omnitient.store.read_bundle` implements the rule and returns what it verified: the parsed manifest and the bytes of each listed file.
 It reads the manifest once and each listed file once, and hashes exactly the bytes it returns.
-So everything it returns matches one manifest, written by one writer, even if another writer replaces files while or after it reads; a replacement while it reads makes it fail instead.
+So everything it returns matches one manifest, written by one writer, even if another writer replaces files while or after it reads: a file replaced before it is read no longer matches the manifest, and the read fails instead of mixing two writes.
 Use the returned bytes.
 Verifying a bundle and then opening its files again by name is not covered, because a `--force` run can replace them in between.
 `omnitient.store.check_bundle` reports the same problems without returning data; an empty result says only that the files verified while they were read.
 A successful read says nothing about what is on disk afterwards.
-A copy of a handoff without its sidecar cannot be verified by this rule; the sidecar holds host paths and is not meant to be committed, so committed handoffs (such as the example's) are plain documents.
 
 **Interrupted or mixed bundles.** An interrupted write leaves data files and no manifest, or a manifest that fails to parse or verify.
 Treat any bundle that fails the reader rule as incomplete: do not use it.
@@ -975,7 +975,7 @@ def evaluate_all(
 ## 11. Provenance
 
 - Package: `omnitient/provenance/o2-git-pinned-context`
-- Revision: `d113a98cf739358daddded5b110ba9cc3f7b89b230c3045d985c80d945f7eb74`
+- Revision: `a55888a384fd7c845e1e6cb82b392c53a5cc6ba90b0c249142841556531f0c17`
 - Package schema: `omnitient/work-package` version 1
 - Handoff schema: `omnitient/handoff` version 1
 - This document contains no generation time and no host paths; identical inputs give identical output.

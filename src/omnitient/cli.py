@@ -333,9 +333,9 @@ def cmd_render(args: argparse.Namespace) -> int:
         if bundle.files != outputs or bundle.manifest != json.loads(manifest_data):
             raise refusal(
                 "output.conflict",
-                f"the bundle in {directory} verifies, but another writer replaced "
-                "it after this one wrote it. Re-run the command if you need this "
-                "command's output.",
+                f"the bundle in {directory} verifies, but it is another writer's, "
+                "which replaced this command's output after it was written. "
+                "Re-run the command if you need this output.",
             )
         for name in (*outputs, manifest_name):
             _out(f"wrote {directory / name}")
