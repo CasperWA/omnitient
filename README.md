@@ -19,8 +19,8 @@ It does not read or write the state of any autonomous-development engine.
 
 ## Status
 
-Pre-release, slice O1.
-The behaviour is specified in [docs/o1-contract.md](docs/o1-contract.md).
+Pre-release, slices O1 and O2.
+The behaviour is specified in [docs/o1-contract.md](docs/o1-contract.md) and, for `omnitient overview`, [docs/o2-overview-contract.md](docs/o2-overview-contract.md).
 
 Supported Python: 3.12 or newer (`requires-python = ">=3.12"`).
 Tested: CPython 3.12, 3.13, 3.14 and 3.15 in CI, standard GIL builds from `actions/setup-python` (for example 3.12.15, 3.13.16, 3.14.8 and 3.15.0), on Linux only; 3.12.15 is the development baseline.
@@ -101,6 +101,17 @@ omnitient evidence add work/my-package --kind pr \
 
 A worked example with unresolved decisions lives in [examples/](examples/).
 
+See every package in one directory at once.
+`overview` reads the immediate subdirectories of the directory you name, each with its own `work-package.json`, and shows each package's declared stage, its readiness for each handoff stage and what needs attention.
+It only reads.
+Discovery rejects symbolic links at the final component of the collection path, at immediate child entries and at manifests, and never follows them; links in ancestor components of the path you give resolve normally.
+Context files that a package lists are read under O1's separate symlink rules.
+
+```bash
+omnitient overview work --root repo=$HOME/src/my-repo
+omnitient overview work --root repo=$HOME/src/my-repo --json
+```
+
 ### Commands
 
 | Command | Purpose |
@@ -112,9 +123,12 @@ A worked example with unresolved decisions lives in [examples/](examples/).
 | `approve` | Record approval of the present revision for a stage. |
 | `evidence add` | Append a report, PR or commit reference. |
 | `context add` / `context pin` | Add a context file, or accept its changed digest. |
+| `overview` | Read-only summary of the packages in one explicit directory: declared stage, readiness per handoff stage, advisory next steps. |
 | `schema` | Print the packaged JSON Schema. |
 
 Exit codes: `0` success; `1` refused or invalid input; `2` usage error; `3` valid but not ready for the requested stage.
+`overview` reports its own outcomes with `0` and `1` only; a usage error is still `2`, and it never exits `3`.
+Blocked valid packages alone do not fail it, but a malformed, linked or unreadable candidate, a duplicate package id or a refusal does.
 
 ## Things worth knowing
 
@@ -135,6 +149,7 @@ Exit codes: `0` success; `1` refused or invalid input; `2` usage error; `3` vali
 ## Documentation
 
 - [docs/o1-contract.md](docs/o1-contract.md): the O1 contract, schema, readiness rules and acceptance plan.
+- [docs/o2-overview-contract.md](docs/o2-overview-contract.md): the O2 contract for `omnitient overview`: discovery rules, output schema, completeness and limits.
 - [docs/development.md](docs/development.md): environment, checks, tests and conventions.
 - [docs/ci.md](docs/ci.md): the CI workflow, runner selection and the steps for making the repository public.
 - [docs/github-handoff.md](docs/github-handoff.md): the state of the GitHub repository, its templates and labels, and the independent review handoff.

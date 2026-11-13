@@ -31,3 +31,8 @@ MAX_EMBED_FILE_BYTES = 262_144
 MAX_EMBED_TOTAL_BYTES = 786_432
 MAX_REFERENCE_FILE_BYTES = 67_108_864
 MAX_OUTPUT_BYTES = 1_048_576
+
+# Overview of a collection (docs/o2-overview-contract.md, section 7).
+# The output bound is MAX_OUTPUT_BYTES, counted over the bytes actually written.
+MAX_COLLECTION_ENTRIES = 1000  # immediate entries, hidden ones included
+MAX_COLLECTION_CANDIDATES = 100  # potential package locations

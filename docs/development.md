@@ -114,6 +114,9 @@ That is specific to this example: a handoff generated from other packages embeds
 | `src/omnitient/store.py` | Exclusive creation, checked updates, handoff bundle publication and verification. |
 | `src/omnitient/safeio.py` | Bounded regular-file reads and strict JSON parsing. |
 | `src/omnitient/render.py` | Markdown and JSON handoffs, with no I/O. |
+| `src/omnitient/collection.py` | Shallow, read-only discovery of the packages in one directory (O2). |
+| `src/omnitient/overview.py` | Assessment of a collection with the O1 engine (O2). |
+| `src/omnitient/overview_render.py` | JSON and text serialisation of an overview, with no I/O (O2). |
 | `src/omnitient/cli.py` | All terminal and file I/O. |
 | `src/omnitient/data/` | Packaged JSON Schema. |
 | `tests/` | One test module per area. |

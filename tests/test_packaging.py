@@ -94,6 +94,8 @@ def test_wheel_contents(installed: tuple[Path, Path]) -> None:
         )
     assert "omnitient/data/work-package.schema.json" in names
     assert "omnitient/cli.py" in names
+    for module in ("collection", "overview", "overview_render"):
+        assert f"omnitient/{module}.py" in names
     assert "omnitient/data/work-package.schema.json.license" in names
     for licence in ("LICENSE", "LICENSES/MIT.txt"):
         assert any(n.endswith(f".dist-info/licenses/{licence}") for n in names)
@@ -174,6 +176,14 @@ def test_console_script_and_packaged_data_work_outside_the_source_tree(
     ), rendered.stderr  # scaffold is not ready: TODO objective
     assert json.loads(rendered.stdout)["status"] == "blocked"
     assert run([script, "validate", package], cwd=elsewhere).returncode == 0
+
+    overview = run([script, "overview", elsewhere, "--json"], cwd=elsewhere)
+    assert overview.returncode == 0, overview.stderr
+    document = json.loads(overview.stdout)
+    assert document["schema"] == "omnitient/overview"
+    assert document["counts"]["valid"] == 1
+    assert document["entries"][0]["path"] == "pkg/work-package.json"
+    assert str(elsewhere) not in overview.stdout
 
 
 def test_build_leaves_the_source_tree_clean() -> None:
