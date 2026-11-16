@@ -528,8 +528,11 @@ def _report(lines: Sequence[str], *, saved: bool) -> int:
     repeated: running the same command again replays it safely.
     """
     try:
-        sys.stdout.write("\n".join(lines) + "\n")
-        sys.stdout.flush()
+        stream = sys.stdout
+        if stream is None:  # the descriptor was closed before the command started
+            raise OSError("standard output is closed")
+        stream.write("\n".join(lines) + "\n")
+        stream.flush()
     except (OSError, ValueError):
         _abandon_stdout()
         if saved:
@@ -735,6 +738,8 @@ def _abandon_stdout() -> None:
     """Point a broken stdout at the null device so the interpreter's own flush at exit
     stays quiet; the command has already failed."""
     try:
+        if sys.stdout is None:
+            return
         fd = os.open(os.devnull, os.O_WRONLY)
         try:
             os.dup2(fd, sys.stdout.fileno())

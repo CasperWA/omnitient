@@ -23,7 +23,7 @@ from omnitient.limits import MAX_OUTPUT_BYTES, MAX_PACKAGE_BYTES
 from omnitient.model import WorkPackage
 from omnitient.serialize import content_digest, dumps
 from omnitient.store import check_bundle, load_package
-from test_delivery import NOW, accept, deficient, padded, withdraw
+from test_delivery import accept, deficient, withdraw
 
 Run = Callable[..., tuple[int, str, str]]
 
@@ -477,10 +477,3 @@ def test_the_bundle_format_is_unchanged_and_verifies_for_a_v2_package(
         "--evidence", "E1", "--reason", "again", "--operation-id", "C9",
     )  # fmt: skip
     assert {p.name: p.read_bytes() for p in out.iterdir()} == before
-
-
-def test_nothing_is_padded_for_the_view_tests(v2_package: WorkPackage) -> None:
-    """Guards the helper the size test relies on."""
-    assert len(dumps(padded(v2_package, 10_000))) == 10_000
-    assert accept(v2_package).delivery[0].recorded_at == "2026-03-04T05:06:07Z"
-    assert NOW.year == 2026

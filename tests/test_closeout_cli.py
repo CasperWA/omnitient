@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 import stat
+import subprocess
 import sys
 from collections.abc import Callable
 from dataclasses import replace
@@ -409,6 +410,56 @@ def test_an_output_failure_after_a_saved_change_is_reported_and_safely_replayabl
     code, out, _ = run(*args)
     assert code == 0
     assert out.startswith("replayed acceptance C1")
+    assert len(load_package(v2_file).package.delivery) == 1
+
+
+def test_a_missing_standard_output_is_an_output_failure_not_a_crash(
+    v2_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A closed descriptor 1 makes ``sys.stdout`` ``None``."""
+    args = closeout_args(v2_file)
+    monkeypatch.setattr(sys, "stdout", None)
+    code = main([str(a) for a in args])
+    err = capsys.readouterr().err
+    monkeypatch.undo()
+    assert code == 1
+    assert "AFTER the change was saved" in err
+    assert len(load_package(v2_file).package.delivery) == 1
+
+
+def test_a_really_closed_standard_output_in_a_child_process(v2_file: Path) -> None:
+    command = closeout_args(v2_file, op="C7")
+    done = subprocess.run(
+        [
+            "/bin/sh",
+            "-c",
+            'exec 1>&-; exec "$@"',
+            "sh",
+            sys.executable,
+            "-m",
+            "omnitient",
+            *map(str, command),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert done.returncode == 1
+    assert "AFTER the change was saved" in done.stderr
+    assert "Traceback" not in done.stderr
+    assert [d.operation_id for d in load_package(v2_file).package.delivery] == ["C7"]
+    replay = subprocess.run(
+        [sys.executable, "-m", "omnitient", *map(str, command)],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert replay.returncode == 0
+    assert replay.stdout.startswith("replayed acceptance C7")
     assert len(load_package(v2_file).package.delivery) == 1
 
 
