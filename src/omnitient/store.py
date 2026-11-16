@@ -23,6 +23,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from omnitient.delivery import check_reserve
 from omnitient.errors import OmnitientError, refusal
 from omnitient.limits import MAX_BUNDLE_OUTPUTS, MAX_OUTPUT_BYTES, MAX_PACKAGE_BYTES
 from omnitient.model import WorkPackage
@@ -159,12 +160,18 @@ def create_package(path: Path, pkg: WorkPackage) -> None:
 
 
 def update_package(
-    loaded: LoadedPackage, mutate: Callable[[WorkPackage], WorkPackage]
+    loaded: LoadedPackage,
+    mutate: Callable[[WorkPackage], WorkPackage],
+    *,
+    reserve_recovery: bool = False,
 ) -> WorkPackage:
     """Apply ``mutate`` to the package and replace the file safely.
 
     The new package is validated by a serialise-and-parse round trip before
     anything is written.
+    A v2 result must also leave room to withdraw every active acceptance
+    (docs/o3-closeout-contract.md, section 7); ``reserve_recovery`` is the narrow
+    exception for a withdrawal that reduces an existing deficit.
     The replacement happens only if the file still has the bytes that were
     read, while an exclusive lock file is held.
     """
@@ -173,6 +180,9 @@ def update_package(
     result = parse_package(data)
     if result.package is None:
         raise OmnitientError(result.diagnostics)
+    check_reserve(
+        loaded.package, result.package, recovery=reserve_recovery, code="store.reserve"
+    )
 
     path = loaded.path.resolve()  # a symlinked package is updated in place
     lock = path.with_name(path.name + ".lock")

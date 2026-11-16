@@ -24,6 +24,9 @@ from omnitient.limits import (
     BLOCK_MAX,
     CONTEXT_MAX,
     DECISIONS_MAX,
+    DELIVERY_EVIDENCE_MAX,
+    DELIVERY_MAX,
+    DELIVERY_REASON_MAX_BYTES,
     EVIDENCE_MAX,
     LINE_MAX,
     LIST_MAX,
@@ -36,24 +39,34 @@ from omnitient.limits import (
 from omnitient.model import (
     CONTEXT_MODES,
     DECISION_STATUSES,
+    DELIVERY_KINDS,
+    DIGEST_SCHEMES,
     EVIDENCE_KINDS,
     HANDOFF_STAGES,
     SCHEMA_ID,
-    SCHEMA_VERSION,
+    SCHEMA_VERSION_1,
+    SCHEMA_VERSION_2,
+    SCHEMA_VERSIONS,
     STAGES,
+    Acceptance,
     Approval,
     ContextRef,
     Decision,
+    DeliveryRecord,
     Dependency,
     EngineRef,
     Evidence,
+    EvidenceSnapshot,
     GitProvenance,
     Limits,
     Recommendation,
+    Revision,
     Root,
+    Withdrawal,
     WorkPackage,
 )
 from omnitient.safeio import loads_strict
+from omnitient.serialize import snapshot_fingerprint
 
 T = TypeVar("T")
 
@@ -363,7 +376,8 @@ def _parse_engine(r: _Reader) -> EngineRef:
     return EngineRef(_s(run_id), attempt_id)
 
 
-def _parse_evidence(r: _Reader) -> Evidence:
+def _read_evidence(r: _Reader) -> Evidence:
+    """The fields of an evidence entry, without closing the reader."""
     ident = r.pattern(
         "id", rules.IDENT, "an identifier (letters, digits, '_', '-'; max 32)"
     )
@@ -376,9 +390,113 @@ def _parse_evidence(r: _Reader) -> Evidence:
         r.error("recorded_at", "must be a UTC timestamp like 2026-01-31T12:00:00Z")
     engine_reader = r.child("engine")
     engine = _parse_engine(engine_reader) if engine_reader else None
-    r.finish()
     return Evidence(
         _s(ident), kind or "report", _s(ref), _s(by), _s(at), summary, engine
+    )
+
+
+def _parse_evidence(r: _Reader) -> Evidence:
+    item = _read_evidence(r)
+    r.finish()
+    return item
+
+
+def _parse_snapshot(r: _Reader) -> EvidenceSnapshot:
+    """A historical copy of an evidence entry: its own syntax and fingerprint only.
+
+    It is deliberately not compared with the live evidence list, and a report's
+    root need not still be declared (docs/o3-closeout-contract.md, section 6).
+    """
+    item = _read_evidence(r)
+    fingerprint = r.pattern(
+        "metadata_sha256", rules.SHA256, "64 lowercase hex characters"
+    )
+    r.finish()
+    if fingerprint is not None and fingerprint != snapshot_fingerprint(item):
+        r.error(
+            "metadata_sha256",
+            "does not match the SHA-256 of the snapshot's metadata",
+            "schema.fingerprint",
+        )
+    _check_evidence_ref(item, None, r.location, r.diags)
+    return EvidenceSnapshot(item, _s(fingerprint))
+
+
+def _reason(r: _Reader) -> str:
+    """Multi-line safe text of 1 to 8192 UTF-8 bytes, kept exactly as written."""
+    value = r.raw("reason", True)
+    if value is _MISSING:
+        return ""
+    if not isinstance(value, str):
+        r.error("reason", "must be a string")
+        return ""
+    if not value.strip():
+        r.error("reason", "must not be empty")
+        return ""
+    problem = rules.text_problem(value, multiline=True)
+    if problem:
+        r.error("reason", problem)
+        return ""
+    if len(value.encode("utf-8")) > DELIVERY_REASON_MAX_BYTES:
+        r.error("reason", f"is longer than {DELIVERY_REASON_MAX_BYTES} UTF-8 bytes")
+        return ""
+    return value
+
+
+def _parse_revision(r: _Reader) -> Revision:
+    scheme = r.choice("scheme", (DIGEST_SCHEMES[SCHEMA_VERSION_2],))
+    digest = r.pattern("digest", rules.SHA256, "64 lowercase hex characters")
+    r.finish()
+    return Revision(scheme or "", _s(digest))
+
+
+def _parse_delivery(r: _Reader) -> DeliveryRecord:
+    kind = r.choice("kind", DELIVERY_KINDS)
+    operation_id = _s(
+        r.pattern(
+            "operation_id",
+            rules.IDENT,
+            "an identifier (an ASCII letter, then letters, digits, '_', '-'; max 32)",
+        )
+    )
+    actor = _s(r.text("actor", max_chars=SHORT_MAX))
+    at = r.text("recorded_at", max_chars=32)
+    if at is not None and not rules.is_timestamp(at):
+        r.error("recorded_at", "must be a UTC timestamp like 2026-01-31T12:00:00Z")
+    recorded_at = _s(at)
+    reason = _reason(r)
+    if kind == "withdrawal":
+        target = r.pattern(
+            "target_acceptance_id", rules.IDENT, "the id of an acceptance"
+        )
+        r.finish()
+        return Withdrawal(operation_id, actor, recorded_at, reason, _s(target))
+    if kind is None:
+        r.seen.update(r.obj)  # the unusable kind is the one problem to report
+        return Withdrawal(operation_id, actor, recorded_at, reason, "")
+    package_id = r.pattern(
+        "package_id", rules.PACKAGE_ID, "a package id 'project/initiative/work-package'"
+    )
+    revision_reader = r.child("revision")
+    if revision_reader is None:
+        r.error("revision", "is required", "schema.missing_field")
+        revision = Revision("", "")
+    else:
+        revision = _parse_revision(revision_reader)
+    snapshots = r.records("evidence", DELIVERY_EVIDENCE_MAX, _parse_snapshot)
+    if not snapshots and "evidence" in r.obj and isinstance(r.obj["evidence"], list):
+        r.error("evidence", "must select at least one evidence entry")
+    if "evidence" not in r.obj:
+        r.raw("evidence", True)  # reports the missing field
+    r.finish()
+    return Acceptance(
+        operation_id,
+        actor,
+        recorded_at,
+        reason,
+        _s(package_id),
+        revision,
+        snapshots,
     )
 
 
@@ -415,8 +533,11 @@ def _check_unique(diags: list[Diagnostic], location: str, ids: Sequence[str]) ->
 
 
 def _check_evidence_ref(
-    item: Evidence, roots: set[str], location: str, diags: list[Diagnostic]
+    item: Evidence, roots: set[str] | None, location: str, diags: list[Diagnostic]
 ) -> None:
+    """Check an evidence reference; ``roots`` is ``None`` for a historical snapshot,
+    where a report's root need not still be declared."""
+
     def bad(message: str) -> None:
         diags.append(Diagnostic("schema.invalid", "error", message, f"{location}.ref"))
 
@@ -431,7 +552,8 @@ def _check_evidence_ref(
             bad(problem)
     else:
         root, sep, path = item.ref.partition(":")
-        if not sep or path.startswith("//") or root not in roots:
+        declared = rules.SLUG.fullmatch(root) if roots is None else root in roots
+        if not sep or path.startswith("//") or not declared:
             bad(
                 "must be an https:// URL or 'declared-root:relative/path' for kind 'report'"
             )
@@ -472,6 +594,54 @@ def _cross_check(pkg: WorkPackage, diags: list[Diagnostic]) -> None:
             )
     for index, item in enumerate(pkg.evidence):
         _check_evidence_ref(item, roots, f"$.evidence[{index}]", diags)
+    _check_delivery(pkg, diags)
+
+
+def _check_delivery(pkg: WorkPackage, diags: list[Diagnostic]) -> None:
+    """History rules that need the whole list (docs/o3-closeout-contract.md, section 4)."""
+
+    def bad(index: int, key: str, message: str) -> None:
+        where = f"$.delivery[{index}]" + (f".{key}" if key else "")
+        diags.append(Diagnostic("schema.delivery", "error", message, where))
+
+    _check_unique(diags, "$.delivery", [d.operation_id for d in pkg.delivery])
+    kinds: dict[str, str] = {}
+    withdrawn: dict[str, str] = {}
+    active: dict[str, str] = {}  # revision digest -> unwithdrawn acceptance id
+    revisions: dict[str, str] = {}
+    for index, record in enumerate(pkg.delivery):
+        if isinstance(record, Acceptance):
+            if record.package_id != pkg.package_id:
+                bad(index, "package_id", "must be the id of the enclosing package")
+            ids = [e.id for e in record.evidence]
+            _check_unique(diags, f"$.delivery[{index}].evidence", ids)
+            digest = record.revision.digest
+            if digest in active:
+                bad(
+                    index,
+                    "revision",
+                    f"overlaps the unwithdrawn acceptance {active[digest]} "
+                    "of the same revision",
+                )
+            active[digest] = record.operation_id
+            revisions[record.operation_id] = digest
+        else:
+            target = record.target_acceptance_id
+            if target not in kinds:
+                bad(index, "target_acceptance_id", "must name an earlier record")
+            elif kinds[target] != "acceptance":
+                bad(index, "target_acceptance_id", "must name an acceptance")
+            elif target in withdrawn:
+                bad(
+                    index,
+                    "target_acceptance_id",
+                    f"is already withdrawn by {withdrawn[target]}",
+                )
+            else:
+                withdrawn[target] = record.operation_id
+                if active.get(revisions[target]) == target:
+                    del active[revisions[target]]
+        kinds.setdefault(record.operation_id, record.kind)
 
 
 def parse_package(raw: bytes) -> ParseResult:
@@ -500,14 +670,21 @@ def parse_package(raw: bytes) -> ParseResult:
     if schema is not _MISSING and schema != SCHEMA_ID:
         r.error("schema", f"must be '{SCHEMA_ID}'")
     version = r.raw("schema_version", True)
-    if version is not _MISSING and (
-        isinstance(version, bool) or version != SCHEMA_VERSION
-    ):
-        r.error(
-            "schema_version",
-            f"unsupported version {version!r}; this Omnitient reads version {SCHEMA_VERSION}",
-            "schema.version",
-        )
+    format_version = SCHEMA_VERSION_1
+    if version is not _MISSING:
+        if (
+            isinstance(version, bool)
+            or not isinstance(version, int)
+            or version not in SCHEMA_VERSIONS
+        ):
+            r.error(
+                "schema_version",
+                f"unsupported version {version!r}; this Omnitient reads versions "
+                + " and ".join(str(v) for v in SCHEMA_VERSIONS),
+                "schema.version",
+            )
+            return ParseResult(None, tuple(diags))
+        format_version = version
     slug = "a slug (lowercase letters, digits, '-'; max 63)"
     pkg = WorkPackage(
         project=_s(r.pattern("project", rules.SLUG, slug)),
@@ -528,8 +705,16 @@ def parse_package(raw: bytes) -> ParseResult:
         ),
         evidence=r.records("evidence", EVIDENCE_MAX, _parse_evidence),
         approvals=r.records("approvals", APPROVALS_MAX, _parse_approval),
+        schema_version=format_version,
+        delivery=(_required_delivery(r) if format_version >= SCHEMA_VERSION_2 else ()),
     )
     r.finish()
     if not diags:
         _cross_check(pkg, diags)
     return ParseResult(None if diags else pkg, tuple(diags))
+
+
+def _required_delivery(r: _Reader) -> tuple[DeliveryRecord, ...]:
+    """The ``delivery`` array of a v2 package, which must be present."""
+    r.raw("delivery", True)  # reports a missing field; the array is read below
+    return r.records("delivery", DELIVERY_MAX, _parse_delivery)

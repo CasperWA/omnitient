@@ -23,10 +23,13 @@ DECISIONS_MAX = 200
 RECOMMENDATIONS_MAX = 20
 EVIDENCE_MAX = 500
 APPROVALS_MAX = 100
+DELIVERY_MAX = 100  # acceptances + withdrawals, reserved withdrawal slots included
+DELIVERY_EVIDENCE_MAX = 20  # evidence ids per acceptance
 MAX_BUNDLE_OUTPUTS = 8  # files a completion manifest may list
 
 # Sizes, in bytes.
-MAX_PACKAGE_BYTES = 262_144
+MAX_PACKAGE_BYTES = 262_144  # stored manifest; for format 2 it includes the reserve
+DELIVERY_REASON_MAX_BYTES = 8192  # UTF-8 bytes of an acceptance or withdrawal reason
 MAX_EMBED_FILE_BYTES = 262_144
 MAX_EMBED_TOTAL_BYTES = 786_432
 MAX_REFERENCE_FILE_BYTES = 67_108_864

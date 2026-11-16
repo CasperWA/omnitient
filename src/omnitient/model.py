@@ -11,7 +11,17 @@ from dataclasses import dataclass
 from typing import Literal
 
 SCHEMA_ID = "omnitient/work-package"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION_1 = 1
+SCHEMA_VERSION_2 = 2
+SCHEMA_VERSIONS: tuple[int, ...] = (SCHEMA_VERSION_1, SCHEMA_VERSION_2)
+LATEST_SCHEMA_VERSION = SCHEMA_VERSION_2
+
+# The digest scheme follows the manifest format and is never configured
+# (docs/o3-closeout-contract.md, section 3).
+DIGEST_SCHEMES: dict[int, str] = {
+    SCHEMA_VERSION_1: "covered-sha256-v1",
+    SCHEMA_VERSION_2: "covered-sha256-v2",
+}
 
 Stage = Literal["draft", "planning", "implementation", "review", "done"]
 HandoffStage = Literal["planning", "implementation", "review"]
@@ -24,6 +34,8 @@ HANDOFF_STAGES: tuple[HandoffStage, ...] = ("planning", "implementation", "revie
 CONTEXT_MODES: tuple[ContextMode, ...] = ("embed", "reference")
 DECISION_STATUSES: tuple[DecisionStatus, ...] = ("unresolved", "resolved")
 EVIDENCE_KINDS: tuple[EvidenceKind, ...] = ("report", "pr", "commit")
+DeliveryKind = Literal["acceptance", "withdrawal"]
+DELIVERY_KINDS: tuple[DeliveryKind, ...] = ("acceptance", "withdrawal")
 
 
 def stage_rank(stage: Stage) -> int:
@@ -120,6 +132,55 @@ class Approval:
 
 
 @dataclass(frozen=True)
+class Revision:
+    """A digest scheme label and the covered-content digest it names."""
+
+    scheme: str
+    digest: str
+
+
+@dataclass(frozen=True)
+class EvidenceSnapshot:
+    """A copy of one evidence entry, taken when an acceptance was recorded.
+
+    ``evidence`` holds the entry's metadata exactly as it was stored;
+    ``metadata_sha256`` is the fingerprint of its canonical serialization.
+    """
+
+    evidence: Evidence
+    metadata_sha256: str
+
+    @property
+    def id(self) -> str:
+        return self.evidence.id
+
+
+@dataclass(frozen=True)
+class Acceptance:
+    operation_id: str
+    actor: str
+    recorded_at: str
+    reason: str
+    package_id: str
+    revision: Revision
+    evidence: tuple[EvidenceSnapshot, ...]
+    kind: Literal["acceptance"] = "acceptance"
+
+
+@dataclass(frozen=True)
+class Withdrawal:
+    operation_id: str
+    actor: str
+    recorded_at: str
+    reason: str
+    target_acceptance_id: str
+    kind: Literal["withdrawal"] = "withdrawal"
+
+
+DeliveryRecord = Acceptance | Withdrawal
+
+
+@dataclass(frozen=True)
 class WorkPackage:
     project: str
     initiative: str
@@ -137,6 +198,14 @@ class WorkPackage:
     recommendations: tuple[Recommendation, ...] = ()
     evidence: tuple[Evidence, ...] = ()
     approvals: tuple[Approval, ...] = ()
+    # The manifest format this package was read from or created as. Delivery
+    # history exists only in format 2; format 1 keeps ``delivery`` empty.
+    schema_version: int = SCHEMA_VERSION_1
+    delivery: tuple[DeliveryRecord, ...] = ()
+
+    @property
+    def digest_scheme(self) -> str:
+        return DIGEST_SCHEMES[self.schema_version]
 
     @property
     def package_id(self) -> str:
