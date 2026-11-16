@@ -17,7 +17,14 @@ from datetime import UTC, datetime
 from importlib import resources
 from pathlib import Path
 
-from omnitient import __version__, ops, overview_render, readiness, render
+from omnitient import (
+    __version__,
+    delivery,
+    ops,
+    overview_render,
+    readiness,
+    render,
+)
 from omnitient.context import (
     HostMapping,
     ResolvedContext,
@@ -25,11 +32,13 @@ from omnitient.context import (
     digest_file,
     resolve_context,
 )
-from omnitient.errors import OmnitientError, refusal
+from omnitient.errors import Diagnostic, OmnitientError, refusal
+from omnitient.limits import MAX_PACKAGE_BYTES
 from omnitient.model import (
     CONTEXT_MODES,
     EVIDENCE_KINDS,
     HANDOFF_STAGES,
+    Acceptance,
     ContextRef,
     GitProvenance,
     HandoffStage,
@@ -37,6 +46,7 @@ from omnitient.model import (
 )
 from omnitient.overview import collection_overview
 from omnitient.readiness import Readiness
+from omnitient.rules import SHA256
 from omnitient.schema import parse_package
 from omnitient.serialize import content_digest, dumps, sha256_hex
 from omnitient.store import (
@@ -459,6 +469,217 @@ def cmd_context_pin(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _report(lines: Sequence[str], *, saved: bool) -> int:
+    """Write the outcome to standard output, and say so if that fails.
+
+    The change (if any) is already persisted when this runs, so a failure here
+    must never claim that nothing changed, and nothing is rolled back or
+    repeated: running the same command again replays it safely.
+    """
+    try:
+        sys.stdout.write("\n".join(lines) + "\n")
+        sys.stdout.flush()
+    except (OSError, ValueError):
+        _abandon_stdout()
+        if saved:
+            _err(
+                "error[delivery.stdout]: standard output failed AFTER the change "
+                "was saved; the package was changed and nothing was rolled back. "
+                "Run the same command again (same operation id) to replay it "
+                "safely and see the record; do not use a new operation id."
+            )
+        else:
+            _err(
+                "error[delivery.stdout]: standard output failed; nothing was "
+                "written to the package"
+            )
+        return EXIT_REFUSED
+    return EXIT_OK
+
+
+def _status_text(status: delivery.AcceptanceStatus, pkg: WorkPackage) -> str:
+    if status.state == "withdrawn":
+        return f"withdrawn by {status.withdrawn_by}"
+    if status.state == "current":
+        return "active, associated with the present revision"
+    return (
+        f"active, associated with a prior revision "
+        f"(present revision {content_digest(pkg)[:12]})"
+    )
+
+
+def _delivery_lines(planned: delivery.Planned, pkg: WorkPackage) -> list[str]:
+    record = planned.record
+    verb = "saved" if planned.outcome == "saved" else "replayed"
+    tail = "" if planned.outcome == "saved" else " (nothing was written)"
+    if isinstance(record, Acceptance):
+        ids = ", ".join(e.id for e in record.evidence)
+        return [
+            (
+                f"{verb} acceptance {record.operation_id}: {record.package_id} "
+                f"revision {record.revision.digest[:12]} "
+                f"({record.revision.scheme}), evidence {ids}; recorded "
+                f"{record.recorded_at} by {record.actor}{tail}"
+            ),
+            f"status: {_status_text(planned.status, pkg)}",
+        ]
+    return [
+        (
+            f"{verb} withdrawal {record.operation_id} of acceptance "
+            f"{record.target_acceptance_id}; recorded {record.recorded_at} by "
+            f"{record.actor}{tail}"
+        ),
+        f"acceptance {record.target_acceptance_id}: {_status_text(planned.status, pkg)}",
+    ]
+
+
+def _delivery_notes(saved: bool) -> None:
+    _err(
+        "note: delivery records are workflow provenance, not authentication, "
+        "verification of any artifact or permission to run anything"
+    )
+    if saved:
+        _err(
+            "note: stage, approvals, context pins and readiness were not "
+            "evaluated or changed"
+        )
+
+
+def cmd_closeout(args: argparse.Namespace) -> int:
+    loaded = load_package(args.package)
+    request = delivery.acceptance_request(
+        operation_id=args.operation_id,
+        actor=args.by,
+        revision=args.revision,
+        evidence=args.evidence,
+        reason=args.reason,
+    )
+    planned = delivery.plan_acceptance(loaded.package, request, _now())
+    if planned.outcome == "saved":
+        update_package(loaded, lambda _pkg: planned.package)
+    _delivery_notes(planned.outcome == "saved")
+    return _report(
+        _delivery_lines(planned, planned.package), saved=planned.outcome == "saved"
+    )
+
+
+def cmd_withdraw(args: argparse.Namespace) -> int:
+    loaded = load_package(args.package)
+    request = delivery.withdrawal_request(
+        operation_id=args.operation_id,
+        actor=args.by,
+        target=args.closeout_id,
+        reason=args.reason,
+    )
+    planned = delivery.plan_withdrawal(loaded.package, request, _now())
+    if planned.outcome == "saved":
+        update_package(loaded, lambda _pkg: planned.package, reserve_recovery=True)
+    _delivery_notes(planned.outcome == "saved")
+    return _report(
+        _delivery_lines(planned, planned.package), saved=planned.outcome == "saved"
+    )
+
+
+def _upgrade_refusal(code: str, message: str) -> OmnitientError:
+    return OmnitientError(Diagnostic(code, "error", message))
+
+
+def cmd_upgrade(args: argparse.Namespace) -> int:
+    if args.to_version != 2:
+        raise _upgrade_refusal(
+            "upgrade.unsupported_version",
+            f"cannot upgrade to version {args.to_version}: only --to-version 2 "
+            "exists, and there is no downgrade",
+        )
+    expected: str | None = args.expected_file_sha256
+    if expected is not None and not args.apply:
+        raise _upgrade_refusal(
+            "upgrade.usage", "--expected-file-sha256 is only used with --apply"
+        )
+    if args.apply and expected is None:
+        raise _upgrade_refusal(
+            "upgrade.hash_required",
+            "--apply needs --expected-file-sha256 with the file hash the preview "
+            "reported",
+        )
+    if expected is not None and not SHA256.fullmatch(expected):
+        raise _upgrade_refusal(
+            "upgrade.hash_invalid",
+            "--expected-file-sha256 must be 64 lowercase hex characters",
+        )
+    loaded = load_package(args.package)  # manifest only: no readiness, context or Git
+    pkg = loaded.package
+    if pkg.schema_version >= 2:
+        if not args.apply:
+            return _report(
+                [
+                    (
+                        f"no upgrade needed: {pkg.package_id} is already "
+                        f"manifest v{pkg.schema_version}"
+                    ),
+                    f"file sha256: {loaded.file_sha256}",
+                ],
+                saved=False,
+            )
+        if expected == loaded.file_sha256:
+            return _report(
+                [
+                    (
+                        f"unchanged: {pkg.package_id} is already manifest "
+                        f"v{pkg.schema_version}; nothing was written"
+                    ),
+                    f"file sha256: {loaded.file_sha256}",
+                ],
+                saved=False,
+            )
+        raise _upgrade_refusal(
+            "upgrade.hash_mismatch",
+            f"the package is already manifest v{pkg.schema_version} and its file hash "
+            f"is {loaded.file_sha256}, not the expected {expected}. An earlier "
+            "upgrade or another change may have happened; nothing was written. "
+            "Inspect it with 'omnitient show' before doing anything else.",
+        )
+
+    new = ops.upgrade_to_v2(pkg)
+    data = dumps(new)
+    checked = parse_package(data)  # oversized or invalid results refuse here
+    if checked.package is None:
+        raise OmnitientError(checked.diagnostics)
+    delivery.check_reserve(pkg, checked.package, code="upgrade.reserve")
+    old_digest, new_digest = content_digest(pkg), content_digest(new)
+    current = sum(a.content_digest == old_digest for a in pkg.approvals)
+    lines = [
+        f"package: {pkg.package_id}",
+        f"format: manifest v{pkg.schema_version} -> v2",
+        f"revision: {old_digest} ({pkg.digest_scheme})",
+        f"      -> {new_digest} ({new.digest_scheme})",
+        (
+            f"approvals: {len(pkg.approvals)} kept unchanged; {current} current "
+            "now, none current after the upgrade (every approval becomes stale)"
+        ),
+        f"resulting file size: {len(data)} bytes (limit {MAX_PACKAGE_BYTES})",
+        f"file sha256: {loaded.file_sha256}",
+    ]
+    if not args.apply:
+        lines.append(
+            "preview only; nothing was written. To apply, keep the pre-upgrade file "
+            "in Git history first, then run the same command with --apply "
+            f"--expected-file-sha256 {loaded.file_sha256}"
+        )
+        return _report(lines, saved=False)
+    if expected != loaded.file_sha256:
+        raise _upgrade_refusal(
+            "upgrade.hash_mismatch",
+            f"the file hash is {loaded.file_sha256}, not the expected {expected}: "
+            "the package is not the one that was previewed. Nothing was written. "
+            "Inspect the package and preview again.",
+        )
+    update_package(loaded, ops.upgrade_to_v2)
+    _err("note: the upgrade made no approval, no repin and no stage change")
+    lines[0] = f"saved upgrade: {pkg.package_id}"
+    return _report(lines, saved=True)
+
+
 def _abandon_stdout() -> None:
     """Point a broken stdout at the null device so the interpreter's own flush at exit
     stays quiet; the command has already failed."""
@@ -506,9 +727,15 @@ def cmd_overview(args: argparse.Namespace) -> int:
     return EXIT_OK if delivered.succeeded else EXIT_REFUSED
 
 
-def cmd_schema(_args: argparse.Namespace) -> int:
+SCHEMA_RESOURCES = {
+    1: "work-package.schema.json",
+    2: "work-package.v2.schema.json",
+}
+
+
+def cmd_schema(args: argparse.Namespace) -> int:
     text = (
-        resources.files("omnitient") / "data" / "work-package.schema.json"
+        resources.files("omnitient") / "data" / SCHEMA_RESOURCES[args.schema_version]
     ).read_text(encoding="utf-8")
     sys.stdout.write(text)
     return EXIT_OK
@@ -637,7 +864,59 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--json", action="store_true")
     p.set_defaults(func=cmd_overview)
 
-    p = sub.add_parser("schema", help="print the packaged JSON Schema")
+    p = sub.add_parser(
+        "closeout",
+        help="record the acceptance of the present revision (manifest v2)",
+    )
+    _add_package_argument(p)
+    p.add_argument("--by", required=True, help="who accepts (recorded as given)")
+    p.add_argument(
+        "--revision", required=True, metavar="DIGEST", help="the present revision"
+    )
+    p.add_argument(
+        "--evidence",
+        required=True,
+        nargs="+",
+        metavar="ID",
+        help="ids of existing evidence entries to snapshot (1 to 20)",
+    )
+    p.add_argument("--reason", required=True, help="the owner's rationale")
+    p.add_argument(
+        "--operation-id", required=True, metavar="ID", help="your id for this record"
+    )
+    p.set_defaults(func=cmd_closeout)
+
+    p = sub.add_parser("withdraw", help="withdraw an earlier acceptance")
+    _add_package_argument(p)
+    p.add_argument("--closeout-id", required=True, metavar="ID")
+    p.add_argument("--by", required=True, help="who withdraws (recorded as given)")
+    p.add_argument("--reason", required=True)
+    p.add_argument(
+        "--operation-id", required=True, metavar="ID", help="your id for this record"
+    )
+    p.set_defaults(func=cmd_withdraw)
+
+    p = sub.add_parser(
+        "upgrade", help="preview or apply the upgrade of one package to manifest v2"
+    )
+    _add_package_argument(p)
+    p.add_argument("--to-version", required=True, type=int, metavar="2")
+    p.add_argument("--apply", action="store_true", help="write the upgrade")
+    p.add_argument(
+        "--expected-file-sha256",
+        metavar="HASH",
+        help="the file hash the preview reported; required with --apply",
+    )
+    p.set_defaults(func=cmd_upgrade)
+
+    p = sub.add_parser("schema", help="print a packaged JSON Schema")
+    p.add_argument(
+        "--schema-version",
+        type=int,
+        choices=sorted(SCHEMA_RESOURCES),
+        default=1,
+        help="manifest format to describe (default 1, the original resource)",
+    )
     p.set_defaults(func=cmd_schema)
     return parser
 

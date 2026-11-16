@@ -18,7 +18,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Any, Literal
 
-from omnitient import ops, readiness, rules
+from omnitient import ops, rules
 from omnitient.errors import Diagnostic, OmnitientError, refusal
 from omnitient.limits import (
     DELIVERY_EVIDENCE_MAX,
@@ -35,6 +35,7 @@ from omnitient.model import (
     Withdrawal,
     WorkPackage,
 )
+from omnitient.readiness import _TODO_PLACEHOLDER
 from omnitient.serialize import content_digest, delivery_to_dict, dumps, snapshot_of
 
 UPGRADE_HINT = (
@@ -512,18 +513,24 @@ def plan_acceptance(
 
     if pkg.schema_version < SCHEMA_VERSION_2:
         raise refusal("delivery.requires_v2", UPGRADE_HINT)
-    incomplete = [
-        d
-        for d in readiness.evaluate(pkg, (), "implementation").blockers
-        if d.code == "content.incomplete"
+    gaps = [
+        text
+        for text, bad in (
+            (
+                "objective is a TODO placeholder",
+                _TODO_PLACEHOLDER.match(pkg.objective.strip()),
+            ),
+            ("scope is empty", not pkg.scope),
+            ("acceptance criteria are empty", not pkg.acceptance),
+        )
+        if bad
     ]
-    if incomplete:
+    if gaps:
         raise OmnitientError(
             Diagnostic(
                 "delivery.incomplete",
                 "error",
-                "the package cannot be accepted: "
-                + "; ".join(d.message for d in incomplete),
+                "the package cannot be accepted: " + "; ".join(gaps),
             )
         )
     current = content_digest(pkg)
