@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -16,7 +17,7 @@ from datetime import UTC, datetime
 from importlib import resources
 from pathlib import Path
 
-from omnitient import __version__, ops, readiness, render
+from omnitient import __version__, ops, overview_render, readiness, render
 from omnitient.context import (
     HostMapping,
     ResolvedContext,
@@ -34,6 +35,7 @@ from omnitient.model import (
     HandoffStage,
     WorkPackage,
 )
+from omnitient.overview import collection_overview
 from omnitient.readiness import Readiness
 from omnitient.schema import parse_package
 from omnitient.serialize import content_digest, dumps, sha256_hex
@@ -457,6 +459,53 @@ def cmd_context_pin(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _abandon_stdout() -> None:
+    """Point a broken stdout at the null device so the interpreter's own flush at exit
+    stays quiet; the command has already failed."""
+    try:
+        fd = os.open(os.devnull, os.O_WRONLY)
+        try:
+            os.dup2(fd, sys.stdout.fileno())
+        finally:
+            os.close(fd)
+    except (OSError, ValueError):
+        pass  # no real descriptor behind stdout (for example a captured stream)
+
+
+def cmd_overview(args: argparse.Namespace) -> int:
+    result = collection_overview(args.collection, args.root or (), args.roots_file)
+    render_fn = (
+        overview_render.render_json if args.json else overview_render.render_text
+    )
+    rendered = render_fn(result)
+    delivered = rendered.overview
+    if not args.json and delivered.results_status == "omitted":
+        # Text mode reports a refusal like the other commands do; JSON always
+        # answers with one envelope on stdout.
+        for diag in delivered.diagnostics:
+            _err(diag.format())
+        return EXIT_REFUSED
+    data = rendered.data
+    try:
+        # An unbuffered or raw stream can accept fewer bytes than offered, or none
+        # (None on a full non-blocking pipe), without raising. Only a count equal to
+        # the document length is a delivery; anything else is a failure.
+        written: int | None = sys.stdout.buffer.write(data)
+        delivered_in_full = written == len(data)
+        if delivered_in_full:
+            sys.stdout.buffer.flush()
+    except OSError:
+        delivered_in_full = False
+    if not delivered_in_full:
+        # Whatever reached the reader may be a cut-off document; do not retry.
+        _abandon_stdout()
+        _err(
+            "error[overview.stdout]: standard output failed; the result may be incomplete"
+        )
+        return EXIT_REFUSED
+    return EXIT_OK if delivered.succeeded else EXIT_REFUSED
+
+
 def cmd_schema(_args: argparse.Namespace) -> int:
     text = (
         resources.files("omnitient") / "data" / "work-package.schema.json"
@@ -573,6 +622,20 @@ def build_parser() -> argparse.ArgumentParser:
     _add_package_argument(p)
     p.add_argument("ids", nargs="+", metavar="ID")
     p.set_defaults(func=cmd_context_pin)
+
+    p = sub.add_parser(
+        "overview",
+        parents=[host],
+        help="read-only overview of the work packages in one directory",
+    )
+    p.add_argument(
+        "collection",
+        type=Path,
+        metavar="COLLECTION",
+        help="directory whose immediate subdirectories hold work-package.json",
+    )
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=cmd_overview)
 
     p = sub.add_parser("schema", help="print the packaged JSON Schema")
     p.set_defaults(func=cmd_schema)

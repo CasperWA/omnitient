@@ -1,0 +1,122 @@
+{
+  "schema": "omnitient/work-package",
+  "schema_version": 1,
+  "project": "omnitient",
+  "initiative": "foundation",
+  "work_package": "o2-overview",
+  "title": "Read-only overview of a local work-package collection",
+  "stage": "draft",
+  "objective": "Add `omnitient overview COLLECTION`, a read-only command that shows, in one invocation, the work packages in one explicit local directory: their declared stages, their assessed handoff readiness per stage and what needs human attention.\nIt builds on the merged O1 slice (commit ca843e1) and reuses O1's schema, host mapping, context resolution and readiness unchanged; it adds discovery, aggregation and output only.\nThe output is a fixed JSON envelope or an escaped terminal report, bounded in size, and it states what it did not verify.",
+  "scope": [
+    "Discover candidates as the immediate child directories of an explicit collection that hold a file named exactly work-package.json; ignore and count everything else; no recursion, Git discovery, registry or implicit collection.",
+    "Reject links at the final collection component, at immediate child entries and at manifests, never follow them, and report them as excluded; ancestor links of the supplied path resolve normally.",
+    "Assess each valid package sequentially with the O1 engine under one shared explicit host mapping, and report declared stage separately from planning, implementation and review readiness.",
+    "Report invalid, excluded and unassessed candidates as identifiable entries, keep duplicate package ids with every path and assessment, and aggregate unknown mapped roots once.",
+    "Emit deterministic advisory actions per stage, a fixed JSON envelope with completeness flags, and an escaped text report; bound candidates, entries and output size.",
+    "Document the contract in docs/o2-overview-contract.md and cover it with offline tests, including fault injection and a before/after read-only check."
+  ],
+  "exclusions": [
+    "No writes to packages, approvals, evidence, pins or any state; no network, subprocess, Git or model execution by the overview.",
+    "No recursion, cross-project grouping, dependency scheduling, priority ranking, or inference of readiness to launch, merge or completion.",
+    "No caching, parallel assessment, configurable limit overrides, automatic redaction, new runtime dependency or schema migration.",
+    "No change to O1 commands, diagnostics, exit codes or package schema version 1, and no change to the unrelated examples/o2-git-pinned-context draft.",
+    "No commit, push, pull request, review launch, CI dispatch or approval recorded by the implementing session."
+  ],
+  "acceptance": [
+    "An empty collection, ignored entries and shallow exact-name discovery produce the exact documented envelope and exit 0.",
+    "Links at the collection root, child entries and manifests are rejected without being followed; ancestor links are allowed; non-regular manifests are never read.",
+    "Malformed, unreadable, excluded and duplicate-id candidates remain identifiable entries, peers are still assessed, and the command exits 1.",
+    "Readiness per stage matches the O1 validate command for the same package and mapping; a package declared done with a stale approval is shown as not ready for implementation.",
+    "Candidate, entry and output-size limits are inclusive, and an overflow is a bounded refusal that is never an arbitrary subset.",
+    "Overview output contains no tool-generated host path or context content, escapes terminal controls in text, and the command writes and spawns nothing.",
+    "The full offline suite, pre-commit and the installed-wheel check pass on the compliant development environment."
+  ],
+  "dependencies": [],
+  "roots": [
+    {
+      "name": "omnitient",
+      "description": "This repository checkout; the host directory is supplied per invocation."
+    }
+  ],
+  "context": [
+    {
+      "id": "o2-contract",
+      "root": "omnitient",
+      "path": "docs/o2-overview-contract.md",
+      "sha256": "e8174d558b97231dcfc00ac098df92eb9a09b61212e905c4f168bdaa0f570b4c",
+      "required": true,
+      "mode": "embed",
+      "purpose": "The O2 overview contract this package implements"
+    },
+    {
+      "id": "o1-contract",
+      "root": "omnitient",
+      "path": "docs/o1-contract.md",
+      "sha256": "0c9c191908dc346438afd762b8c757ec988d5b14c39a016836a752bd591e23f1",
+      "required": true,
+      "mode": "embed",
+      "purpose": "The O1 baseline that O2 reuses unchanged"
+    },
+    {
+      "id": "collection-module",
+      "root": "omnitient",
+      "path": "src/omnitient/collection.py",
+      "sha256": "69ef90f0f808f460946f5df548cf3d0b08411cf869d5a22a2793b1d6c2df23af",
+      "required": true,
+      "mode": "embed",
+      "purpose": "Discovery layer"
+    },
+    {
+      "id": "overview-module",
+      "root": "omnitient",
+      "path": "src/omnitient/overview.py",
+      "sha256": "45af383412aa479b0cb01a82e7f79be1c11b751c456e3e93cce55d84e6e9a016",
+      "required": true,
+      "mode": "embed",
+      "purpose": "Assessment layer"
+    },
+    {
+      "id": "overview-render-module",
+      "root": "omnitient",
+      "path": "src/omnitient/overview_render.py",
+      "sha256": "20eddc8455c5b3c7a8346756263176456a6fe31217625185ce32730b3ac98581",
+      "required": true,
+      "mode": "embed",
+      "purpose": "JSON and text rendering"
+    },
+    {
+      "id": "overview-tests",
+      "root": "omnitient",
+      "path": "tests/test_overview.py",
+      "sha256": "8b655b1c58a915e6038030312acff8f91425b70469d58edf5b4b89b66308d61f",
+      "required": true,
+      "mode": "embed",
+      "purpose": "Offline tests for the overview"
+    }
+  ],
+  "decisions": [
+    {
+      "id": "D1",
+      "question": "How does collection discovery treat symbolic links?",
+      "rationale": "A link cannot be classified without following it, and following it would let a collection reach outside the directory the operator chose.",
+      "status": "resolved",
+      "answer": "Links in ancestor components of the supplied collection path resolve normally. Links at the final collection component, at immediate child entries and at candidate manifests are rejected and never followed; an excluded location is still counted as a candidate. O1's context-symlink rules are unchanged.",
+      "source": "Repository owner, accepted in the O2 local implementation brief",
+      "needed_by": "planning",
+      "applies_to_revision": "cc8a6816b13ca41e1f9c4fc8a341a6e186dbbc1c"
+    },
+    {
+      "id": "D2",
+      "question": "What does the overview promise about privacy?",
+      "rationale": "Authors may write paths or secret-like text in titles and decisions, and the overview cannot tell.",
+      "status": "resolved",
+      "answer": "The overview prevents tool-generated host-path disclosure and never embeds context contents. Authored text is shown as written, safely escaped, even if it contains a path or secret-like text; it is not scanned and nothing is redacted automatically.",
+      "source": "Repository owner, accepted in the O2 local implementation brief",
+      "needed_by": "planning",
+      "applies_to_revision": "cc8a6816b13ca41e1f9c4fc8a341a6e186dbbc1c"
+    }
+  ],
+  "recommendations": [],
+  "evidence": [],
+  "approvals": []
+}

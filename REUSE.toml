@@ -10,6 +10,7 @@ path = [
   "LICENSE",
   ".github/PULL_REQUEST_TEMPLATE.md",
   "examples/o2-git-pinned-context/work-package.json",
+  "work/o2-overview/work-package.json",
 ]
 precedence = "closest"
 SPDX-FileCopyrightText = [
