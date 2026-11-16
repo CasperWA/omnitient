@@ -15,7 +15,9 @@ import errno
 import json
 import os
 import stat
+import subprocess
 import sys
+import textwrap
 from collections.abc import Callable, Iterator
 from dataclasses import replace
 from pathlib import Path
@@ -24,12 +26,13 @@ from typing import Any
 import pytest
 
 from conftest import NOTES_TEXT, SPEC_TEXT, sha
+from omnitient import cli as cli_module
 from omnitient import ops, overview_render
 from omnitient.cli import main
 from omnitient.errors import Diagnostic
 from omnitient.limits import MAX_OUTPUT_BYTES
 from omnitient.model import ContextRef, Decision, Root, WorkPackage
-from omnitient.overview import Overview
+from omnitient.overview import Overview, collection_overview
 from omnitient.serialize import content_digest, dumps
 
 Run = Callable[..., tuple[int, str, str]]
@@ -428,9 +431,12 @@ def test_unreadable_paths_by_fault_injection_even_where_modes_are_ignored(
     assert "Input/output" not in text
 
 
-def test_a_manifest_swapped_for_a_fifo_after_inventory_is_never_blocked_on(
+def test_a_manifest_swapped_for_a_fifo_before_the_read_pass_is_excluded_by_the_lstat_recheck(
     run: Run, coll: Path, package: WorkPackage, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # The swap happens before the read pass looks at the manifest, so this covers the
+    # lstat recheck only; the window between that check and the open is exercised in
+    # a child process by the test further down.
     manifest = put(coll, "p", package)
     from omnitient import collection
 
@@ -556,34 +562,108 @@ def test_manifest_that_vanishes_or_fails_midway_is_reported_not_guessed(
     assert "Input/output" not in json.dumps(doc)
 
 
-def test_reading_a_manifest_refuses_links_and_fifos_that_appear_after_the_check(
-    tmp_path: Path,
-) -> None:
+# Opening a FIFO that has no writer blocks forever unless the open is non-blocking, so
+# the race runs in a child process that the timeout kills; a regression fails the test
+# instead of hanging the run. The child swaps the manifest in from inside an lstat
+# hook, that is after the type check and before the open.
+RACE_CHILD = textwrap.dedent("""
+    import json, os, sys
+    from pathlib import Path
     from omnitient import collection
 
-    holder = tmp_path / "holder"
-    holder.mkdir()
+    kind, directory, name, target = sys.argv[1:5]
+    manifest = Path(directory) / name / "work-package.json"
+    real_lstat = os.lstat
+    swaps: list[str] = []
+
+    def lstat(path, *args, **kwargs):
+        result = real_lstat(path, *args, **kwargs)
+        if path == "work-package.json" and kwargs.get("dir_fd") is not None:
+            if not swaps:
+                swaps.append(kind)
+                manifest.unlink()
+                if kind == "fifo":
+                    os.mkfifo(manifest)
+                else:
+                    manifest.symlink_to(target)
+        return result
+
+    os.lstat = lstat
+    root_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+    probe = collection.probe_child(root_fd, name, read=True)
+    print(json.dumps({
+        "source": collection.__file__,
+        "swapped": swaps,
+        "kind": probe.kind,
+        "code": probe.diagnostic and probe.diagnostic.code,
+        "raw": probe.raw is not None,
+    }))
+    """)
+
+
+def source_snapshot() -> Path:
+    """The ``src`` directory of the snapshot under test; children import from it."""
+    return Path(cli_module.__file__).resolve().parent.parent
+
+
+def child_env(tmp_path: Path) -> dict[str, str]:
+    return {
+        "PATH": os.environ.get("PATH", ""),
+        "HOME": str(tmp_path / "home"),
+        "PYTHONPATH": str(source_snapshot()),
+        "PYTHONDONTWRITEBYTECODE": "1",
+    }
+
+
+def run_child(
+    tmp_path: Path, script: str, *args: str, timeout: int, what: str
+) -> tuple[subprocess.CompletedProcess[str], Doc]:
+    """Run ``script`` in a child process; its last stdout line is a JSON report."""
+    try:
+        done = subprocess.run(
+            [sys.executable, "-B", "-c", script, *args],
+            capture_output=True,
+            text=True,
+            env=child_env(tmp_path),
+            timeout=timeout,
+            check=False,
+            cwd=tmp_path,
+        )
+    except subprocess.TimeoutExpired:
+        pytest.fail(f"{what} did not finish within {timeout} s")
+    assert done.returncode == 0, done.stderr
+    report: Doc = json.loads(done.stdout.splitlines()[-1])
+    # The child must have imported the snapshot under test, not another copy.
+    for key in ("source", "cli_source"):
+        if key in report:
+            assert Path(report[key]).resolve().is_relative_to(source_snapshot())
+    return done, report
+
+
+@pytest.mark.parametrize(
+    ("kind", "code"),
+    [("fifo", "overview.not_regular"), ("symlink", "overview.symlink")],
+)
+def test_a_manifest_swapped_for_a_link_or_fifo_between_the_check_and_the_open_is_refused(
+    tmp_path: Path, package: WorkPackage, kind: str, code: str
+) -> None:
+    coll = tmp_path / "work"
+    coll.mkdir()
+    put(coll, "p", package)
     target = tmp_path / "target.json"
     target.write_text("{}")
-    (holder / "work-package.json").symlink_to(target)
-    fd = os.open(holder, os.O_RDONLY | os.O_DIRECTORY)
-    try:
-        link = collection._read_manifest(fd)
-        (holder / "work-package.json").unlink()
-        os.mkfifo(holder / "work-package.json")
-        fifo = collection._read_manifest(fd)  # must return, not block
-    finally:
-        os.close(fd)
-    assert (link.kind, link.diagnostic and link.diagnostic.code) == (
-        "excluded",
-        "overview.symlink",
+    _, report = run_child(
+        tmp_path,
+        RACE_CHILD,
+        kind,
+        str(coll),
+        "p",
+        str(target),
+        timeout=20,
+        what=f"opening a manifest swapped for a {kind} (is O_NONBLOCK still set?)",
     )
-    assert (fifo.kind, fifo.diagnostic and fifo.diagnostic.code) == (
-        "excluded",
-        "overview.not_regular",
-    )
-    assert link.raw is None
-    assert fifo.raw is None
+    assert report["swapped"] == [kind], "the swap must happen after the type check"
+    assert (report["kind"], report["code"], report["raw"]) == ("excluded", code, False)
 
 
 def test_a_collection_path_that_cannot_be_used_at_all_is_a_refusal() -> None:
@@ -711,6 +791,30 @@ def test_duplicate_ids_keep_every_path_and_assessment_and_fail_the_command(
         for stage in entry["readiness"].values():
             assert "overview.duplicate_id" not in codes(stage["blockers"])
     assert by_path["third/work-package.json"]["diagnostics"] == []
+
+
+def test_duplicate_paths_are_complete_in_entries_and_json_but_shortened_in_the_text_summary(
+    run: Run, coll: Path, package: WorkPackage
+) -> None:
+    names = [f"{letter}-{'long-directory-name-' * 3}" for letter in "abcd"]
+    for name in names:
+        put(coll, name, package)
+    paths = [f"{name}/work-package.json" for name in names]
+    _, doc = overview(run, coll, expect=1)
+    (summary,) = doc["diagnostics"]
+    assert all(path in summary["message"] for path in paths)  # JSON is complete
+    assert len(summary["message"]) > 200
+    code, text, _ = run("overview", coll)
+    assert code == 1  # duplicates stay visible and fail the command
+    lines = text.splitlines()
+    assert all(f"[valid] {path}" in lines for path in paths)  # entry headers: complete
+    (summary_line,) = (line for line in lines if line.startswith("error[overview.dup"))
+    assert summary_line.endswith("…")  # the embedded paths are abbreviated
+    assert paths[-1] not in summary_line
+    entry_errors = [
+        line for line in lines if "[overview.duplicate_id] package.id" in line
+    ]
+    assert len(entry_errors) == len(paths)  # every duplicate is flagged on its entry
 
 
 # --- 6, 7: declared stage vs readiness; context and decisions ----------------
@@ -1524,29 +1628,337 @@ def test_failure_partway_through_the_listing_is_a_whole_refusal(
     assert "Input/output" not in err
 
 
-def test_broken_stdout_reports_a_nonzero_exit_without_retrying(
-    coll: Path, package: WorkPackage, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    put(coll, "p", package)
-    writes: list[bytes] = []
+class ScriptedBuffer:
+    """A stand-in for ``sys.stdout.buffer`` that records calls and scripts results."""
 
-    class Broken:
-        def write(self, data: bytes) -> int:
-            writes.append(data)
-            raise BrokenPipeError(errno.EPIPE, "Broken pipe")
+    def __init__(
+        self,
+        write_result: Callable[[bytes], Any] = len,
+        *,
+        write_error: OSError | None = None,
+        flush_error: OSError | None = None,
+    ) -> None:
+        self.write_result = write_result
+        self.write_error = write_error
+        self.flush_error = flush_error
+        self.writes: list[bytes] = []
+        self.flushes = 0
 
-        def flush(self) -> None:
-            raise BrokenPipeError(errno.EPIPE, "Broken pipe")
+    def write(self, data: bytes) -> Any:
+        self.writes.append(bytes(data))
+        if self.write_error is not None:
+            raise self.write_error
+        return self.write_result(data)
 
+    def flush(self) -> None:
+        self.flushes += 1
+        if self.flush_error is not None:
+            raise self.flush_error
+
+
+def scripted_stdout(monkeypatch: pytest.MonkeyPatch, buffer: ScriptedBuffer) -> None:
     class Stdout:
-        buffer = Broken()
-
         def fileno(self) -> int:
             raise OSError("no descriptor")
 
-    monkeypatch.setattr(sys, "stdout", Stdout())
-    assert main(["overview", str(coll), "--json"]) == 1
-    assert len(writes) == 1  # one attempt, not retried or split
+    stdout = Stdout()
+    stdout.buffer = buffer  # type: ignore[attr-defined]
+    monkeypatch.setattr(sys, "stdout", stdout)
+
+
+def intended_bytes(collection: Path, fmt: str) -> bytes:
+    render = (
+        overview_render.render_json if fmt == "json" else overview_render.render_text
+    )
+    return render(collection_overview(collection, (), None)).data
+
+
+def overview_argv(collection: Path, fmt: str) -> list[str]:
+    return ["overview", str(collection), *(["--json"] if fmt == "json" else [])]
+
+
+FORMATS = pytest.mark.parametrize("fmt", ["json", "text"])
+STDOUT_FAILURE = "error[overview.stdout]: standard output failed"
+
+
+@FORMATS
+def test_a_complete_write_and_flush_is_delivered_once(
+    coll: Path,
+    package: WorkPackage,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    fmt: str,
+) -> None:
+    put(coll, "p", package)
+    buffer = ScriptedBuffer()
+    scripted_stdout(monkeypatch, buffer)
+    assert main(overview_argv(coll, fmt)) == 0
+    assert buffer.writes == [intended_bytes(coll, fmt)]
+    assert buffer.flushes == 1
+    assert capsys.readouterr().err == ""
+
+
+@FORMATS
+@pytest.mark.parametrize(
+    "short",
+    [
+        pytest.param(lambda data: len(data) - 1, id="one-byte-short"),
+        pytest.param(lambda _data: 7, id="seven-bytes"),
+        pytest.param(lambda _data: 0, id="zero"),
+        pytest.param(lambda _data: None, id="none"),
+        pytest.param(lambda data: len(data) + 1, id="more-than-intended"),
+    ],
+)
+def test_a_write_that_does_not_report_the_full_length_is_a_delivery_failure(
+    coll: Path,
+    package: WorkPackage,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    fmt: str,
+    short: Callable[[bytes], Any],
+) -> None:
+    put(coll, "p", package)
+    buffer = ScriptedBuffer(short)
+    scripted_stdout(monkeypatch, buffer)
+    # The document itself is a success (exit 0 when delivered), so exit 1 can only
+    # come from the delivery failure, never from the assessment.
+    assert main(overview_argv(coll, fmt)) == 1
+    assert len(buffer.writes) == 1  # one attempt: no retry of the rest, no splitting
+    assert STDOUT_FAILURE in capsys.readouterr().err
+
+
+@FORMATS
+@pytest.mark.parametrize("failing", ["write", "flush"])
+def test_a_raised_write_or_flush_error_is_a_delivery_failure_without_retrying(
+    coll: Path,
+    package: WorkPackage,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    fmt: str,
+    failing: str,
+) -> None:
+    put(coll, "p", package)
+    error = BrokenPipeError(errno.EPIPE, "Broken pipe")
+    buffer = ScriptedBuffer(
+        write_error=error if failing == "write" else None,
+        flush_error=error if failing == "flush" else None,
+    )
+    scripted_stdout(monkeypatch, buffer)
+    assert main(overview_argv(coll, fmt)) == 1
+    assert len(buffer.writes) == 1  # one attempt, not retried or split
+    assert STDOUT_FAILURE in capsys.readouterr().err
+
+
+def test_a_text_refusal_never_touches_standard_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    buffer = ScriptedBuffer()
+    scripted_stdout(monkeypatch, buffer)
+    assert main(["overview", str(tmp_path / "missing")]) == 1
+    assert (buffer.writes, buffer.flushes) == ([], 0)
+    assert "overview.collection_invalid" in capsys.readouterr().err
+
+
+# Real pipes. A buffered stdout raises when a non-blocking pipe cannot take all of the
+# data, but an unbuffered one (python -u, or any raw binary layer) returns a short
+# count or None. The child shrinks the pipe to its smallest size, so the capacity is
+# derived from the kernel rather than assumed, and measures everything in one run.
+LINUX_PIPES = pytest.mark.skipif(
+    sys.platform != "linux", reason="needs F_SETPIPE_SZ and non-blocking pipes"
+)
+PIPE_CHILD = textwrap.dedent("""
+    import fcntl, io, json, os, sys
+    from pathlib import Path
+    from omnitient import cli, overview_render
+    from omnitient.overview import collection_overview
+
+    directory, fmt, scenario = Path(sys.argv[1]), sys.argv[2], sys.argv[3]
+    render = (
+        overview_render.render_json if fmt == "json" else overview_render.render_text
+    )
+    expected = render(collection_overview(directory, (), None)).data
+
+    read_end, write_end = os.pipe()
+    fcntl.fcntl(write_end, fcntl.F_SETPIPE_SZ, 1)
+    capacity = fcntl.fcntl(write_end, fcntl.F_GETPIPE_SZ)
+    os.set_blocking(read_end, False)
+    os.set_blocking(write_end, False)
+    filler = 0
+    if scenario == "full":
+        while True:
+            try:
+                filler += os.write(write_end, b"x")
+            except BlockingIOError:
+                break
+    report = {
+        "source": cli.__file__,
+        "expected_bytes": len(expected),
+        "capacity": capacity,
+        "filler_bytes": filler,
+    }
+    if len(expected) <= capacity:
+        report["precondition"] = False
+        print(json.dumps(report))
+        raise SystemExit(0)
+
+    class Recorder:
+        def __init__(self, raw):
+            self.raw = raw
+            self.writes = []
+            self.flushes = 0
+
+        def write(self, data):
+            accepted = self.raw.write(data)
+            self.writes.append([len(data), accepted])
+            return accepted
+
+        def flush(self):
+            self.flushes += 1
+            self.raw.flush()
+
+    recorder = Recorder(io.FileIO(write_end, "wb", closefd=False))
+
+    class Stdout:
+        buffer = recorder
+
+        def fileno(self):
+            return write_end
+
+    argv = ["overview", str(directory)] + (["--json"] if fmt == "json" else [])
+    stderr = io.StringIO()
+    sys.stdout, sys.stderr = Stdout(), stderr
+    result = cli.main(argv)
+    sys.stdout, sys.stderr = sys.__stdout__, sys.__stderr__
+
+    received = b""
+    while True:
+        try:
+            chunk = os.read(read_end, 65536)
+        except BlockingIOError:
+            break
+        if not chunk:
+            break
+        received += chunk
+    delivered = received[filler:]
+    report.update(
+        precondition=True,
+        main_result=result,
+        writes=recorder.writes,
+        flushes=recorder.flushes,
+        received_bytes=len(delivered),
+        received_is_prefix=expected.startswith(delivered),
+        stderr=stderr.getvalue(),
+    )
+    print(json.dumps(report))
+    """)
+
+
+def pipe_collection(tmp_path: Path, package: WorkPackage) -> Path:
+    """Synthetic packages, enough that a document is larger than the smallest pipe."""
+    coll = tmp_path / "work"
+    coll.mkdir()
+    for slug in ("alpha", "beta", "gamma", "delta", "epsilon", "zeta"):
+        put(coll, slug, variant(package, slug))
+    return coll
+
+
+@LINUX_PIPES
+@FORMATS
+@pytest.mark.parametrize("scenario", ["partial", "full"])
+def test_a_real_nonblocking_pipe_that_cannot_take_the_document_is_a_delivery_failure(
+    tmp_path: Path, package: WorkPackage, fmt: str, scenario: str
+) -> None:
+    coll = pipe_collection(tmp_path, package)
+    done, report = run_child(
+        tmp_path,
+        PIPE_CHILD,
+        str(coll),
+        fmt,
+        scenario,
+        timeout=60,
+        what=f"writing the overview to a {scenario} non-blocking pipe",
+    )
+    if not report["precondition"]:
+        pytest.skip(f"pipe capacity {report['capacity']} holds the whole document")
+    expected, capacity = report["expected_bytes"], report["capacity"]
+    accepted = None if scenario == "full" else capacity
+    # One attempt at the whole document, and it was not accepted in full.
+    assert report["writes"] == [[expected, accepted]]
+    assert report["main_result"] == 1  # main()'s own result ...
+    assert done.returncode == 0  # ... is not the harness process's exit status
+    assert STDOUT_FAILURE in report["stderr"]
+    assert report["received_bytes"] == (0 if scenario == "full" else capacity)
+    assert report["received_bytes"] < expected
+    assert report["received_is_prefix"]
+    assert report["filler_bytes"] == (capacity if scenario == "full" else 0)
+
+
+@LINUX_PIPES
+@pytest.mark.parametrize("scenario", ["partial", "full"])
+def test_an_unbuffered_process_exits_1_when_its_pipe_cannot_take_the_document(
+    tmp_path: Path, package: WorkPackage, scenario: str
+) -> None:
+    import fcntl
+
+    coll = pipe_collection(tmp_path, package)
+    expected = intended_bytes(coll, "json")
+    read_end, write_end = os.pipe()
+    try:
+        fcntl.fcntl(write_end, fcntl.F_SETPIPE_SZ, 1)
+        capacity = fcntl.fcntl(write_end, fcntl.F_GETPIPE_SZ)
+        if len(expected) <= capacity:
+            pytest.skip(f"pipe capacity {capacity} holds the whole document")
+        os.set_blocking(read_end, False)
+        os.set_blocking(write_end, False)
+        filler = 0
+        if scenario == "full":
+            while True:
+                try:
+                    filler += os.write(write_end, b"x")
+                except BlockingIOError:
+                    break
+        script = (
+            "import sys; from omnitient import cli; "
+            "print(cli.__file__, file=sys.stderr); "
+            "raise SystemExit(cli.main(sys.argv[1:]))"
+        )
+        try:
+            done = subprocess.run(
+                [
+                    sys.executable,
+                    "-B",
+                    "-u",
+                    "-c",
+                    script,
+                    *overview_argv(coll, "json"),
+                ],
+                stdout=write_end,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=child_env(tmp_path),
+                timeout=60,
+                check=False,
+                cwd=tmp_path,
+            )
+        except subprocess.TimeoutExpired:
+            pytest.fail("the unbuffered overview did not finish on a non-blocking pipe")
+        os.close(write_end)
+        write_end = -1
+        received = b""
+        while chunk := os.read(read_end, 65536):
+            received += chunk
+    finally:
+        if write_end >= 0:
+            os.close(write_end)
+        os.close(read_end)
+    source, _, errors = done.stderr.partition("\n")
+    assert Path(source).resolve().is_relative_to(source_snapshot())
+    assert done.returncode == 1
+    assert STDOUT_FAILURE in errors
+    delivered = received[filler:]
+    assert len(delivered) < len(expected)
+    assert expected.startswith(delivered)
+    assert len(delivered) == (0 if scenario == "full" else capacity)
 
 
 def test_programming_errors_are_not_reported_as_partial_results(
@@ -1786,7 +2198,7 @@ def test_manifest_code_is_never_imported_or_executed(
 # --- 16: command availability ---------------------------------------------------
 
 
-def test_the_overview_command_is_listed_and_o1_commands_are_unchanged(
+def test_the_overview_command_is_listed_beside_the_o1_commands_in_help(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     with pytest.raises(SystemExit):

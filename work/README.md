@@ -14,7 +14,8 @@ Each immediate subdirectory holds one `work-package.json`:
 omnitient overview work --root omnitient=$PWD
 ```
 
-This file and anything else that is not a subdirectory with a `work-package.json` are ignored by the overview, and counted.
+This file and any other entry that is not a subdirectory with a `work-package.json` are ignored by the overview, and counted.
+A symbolic link is the exception: it is not ignored but an excluded candidate that is never followed, and it makes the overview exit `1`, so keep none here.
 Do not put synthetic or edge-case packages here; they belong in a test's temporary directory, so that this collection stays the project's real record.
 Do not render handoffs into it either: render them somewhere outside the collection, and do not commit the `*.meta.json` sidecars.
 

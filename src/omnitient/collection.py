@@ -12,6 +12,10 @@ entry or at a manifest. Below the opened collection directory it is
 descriptor-relative, uses ``O_NOFOLLOW`` on the relevant opens, refuses a link
 substituted at those components and verifies that a manifest is a regular file
 before reading it (docs/o2-overview-contract.md, section 3).
+The functions take the collection as a ``pathlib.Path``; the final-component link
+rule relies on that, because ``Path`` drops a trailing separator or ``.`` that would
+otherwise make the operating system resolve a link before the check sees it. The
+command-line interface always passes a ``Path``; a ``str`` is not normalised here.
 There is no atomic snapshot and no general protection against a hostile
 concurrent writer to the file system; renames, hard links and mounts are not
 defended against.

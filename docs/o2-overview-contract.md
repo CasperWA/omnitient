@@ -55,6 +55,10 @@ work/
 
 - Links in **ancestor** components of the supplied `COLLECTION` path resolve normally.
 - A link at the **final component** of `COLLECTION` is refused (`overview.symlink`, a whole-command refusal).
+- The final-component rule relies on the collection being a `pathlib.Path`, which is what `collection_overview` and the discovery functions declare.
+  `Path` drops a trailing separator or `.` component, so the command's argument `work/` or `work/.` is the same final component as `work`.
+  A `str` is not part of the library contract and is not normalised: the operating system resolves a link spelled `link/` before the final-component check can see it.
+  Library callers pass a `Path`; the command always does.
 - A link as an **immediate child entry** (to anything, including a dangling one) or as the **manifest** is not followed.
   The location is a candidate with status `excluded`, because nothing can be said about a package that may be behind the link.
 - Discovery below the opened collection directory is descriptor-relative: each child directory and each manifest is looked at with an `lstat` and opened with `O_NOFOLLOW` relative to a descriptor already held, and the manifest is verified to be a regular file on the open descriptor before any of it is read.
@@ -121,7 +125,7 @@ Warnings produce advice but never change `ready` or the exit status.
 
 ## 5. JSON output
 
-`--json` writes one document to stdout and nothing to stderr.
+`--json` writes one document to stdout and nothing to stderr, unless delivering it fails (section 6).
 Keys are in the fixed order below; the text is `json.dumps(..., ensure_ascii=True, allow_nan=False, indent=2)` plus a final line feed.
 
 | Key | Type | Meaning |
@@ -164,6 +168,7 @@ Overview locations are fixed symbols: `collection`, `roots`, `output`, `manifest
 | `overview.entry_limit` | error | collection refusal | More than 1000 immediate entries. |
 | `overview.package_limit` | error | collection refusal | More than 100 candidate locations. |
 | `overview.output_limit` | error | output refusal | The selected output exceeds 1,048,576 bytes. |
+| `overview.stdout` | error | stderr only | Standard output failed during delivery (section 6); never part of the JSON document. |
 | `roots.invalid`, `roots.duplicate` | error | collection refusal | The host mapping is invalid (O1 codes). |
 | `roots.unknown` | warning | collection | Section 4. |
 
@@ -196,7 +201,16 @@ The code names the category, not the host condition: the overview does not claim
 A refusal has `entries: []` and one diagnostic; it is never an arbitrary subset and never an empty successful collection.
 Exit status is `0` or `1` for a delivered overview, `2` for an argument error (argparse, unchanged), and never `3`: there is no aggregate readiness.
 A programming error is not turned into a report; it ends with a traceback.
-If stdout breaks, the command exits `1` after one write attempt, with no retry; whatever the reader received may be cut short, and the overview publishes nothing anywhere else.
+
+**Delivery.**
+The selected output is serialised completely in memory before the first byte is written.
+The command then makes one `write` of the whole document to the binary standard output and one `flush`; it never retries or splits the write.
+The write must report exactly the document's length.
+An error raised by the write or the flush is a delivery failure, and so is a count that is short, zero or `None`, which an unbuffered stream or a non-blocking pipe that cannot take everything returns without raising.
+A delivery failure writes `error[overview.stdout]: standard output failed; the result may be incomplete` to stderr and exits `1`, whatever the document's own status would have been, and points the process's standard output at the null device so the interpreter's flush at exit stays quiet.
+The overview cannot recall bytes that already reached the reader and does not claim atomic delivery: a failure may leave partial output, and the nonzero exit is the signal when the failure is detected.
+Nothing is published anywhere else, and a delivery says nothing about readiness or completion.
+A text-mode refusal (`omitted`) is reported on stderr before anything is written to stdout.
 
 Preflight order: argument parsing, mapping validation, collection validation, bounded inventory, sorted assessments, duplicate and aggregate diagnostics, serialisation.
 So an invalid mapping is reported even when the collection is also invalid, and discovery never starts after it.
@@ -222,7 +236,10 @@ Every character a terminal could act on is written as an escape: control charact
 Titles are limited to 100 source characters and diagnostic messages to 200, counted on the text as written, before escaping.
 Text longer than the limit is cut to one character fewer and followed by `…`, which marks it as shortened; the cut text is then escaped.
 The limits are therefore neither terminal-column widths nor limits on the escaped length: a title full of characters that need escapes can occupy more rendered characters than its limit.
-Paths are never shortened.
+The entry header of every entry (`[status] NAME/work-package.json`) and the `path` of every JSON entry are never shortened.
+A path quoted inside a diagnostic message, such as the paths the duplicate-id summary lists, is part of that message, so the text report shortens it with the message at 200 characters; the JSON message and the entry headers still carry every path in full.
+Which code points are printable or unassigned comes from the Unicode database of the running Python interpreter (`str.isprintable`), so the text report can escape a recently assigned character differently under another Python version.
+The JSON form does not classify characters: it escapes every non-ASCII character by code point.
 The report states that declared stages are not verified and that dependencies, evidence and Git provenance are not checked.
 It is encoded as UTF-8.
 A refusal is reported on stderr in O1's `severity[code] location: message` form with nothing on stdout.
@@ -260,9 +277,9 @@ Every item is an offline pytest test in `tests/test_overview.py` unless noted.
 | --- | --- |
 | Empty collection and exact envelope; ignored entries; shallow exact-name discovery | `test_empty_collection_has_the_exact_envelope`, `test_only_immediate_children_with_the_exact_manifest_name_are_candidates` |
 | No recursive fixture or handoff inclusion | `test_generated_handoffs_and_fixtures_below_a_package_are_not_candidates` |
-| Final root, child and manifest links refused; ancestor links allowed; races | `test_a_link_at_the_collection_root_is_refused`, `test_links_in_ancestor_components_resolve_normally`, `test_links_at_child_and_manifest_level_are_excluded_and_not_followed`, `test_a_link_swapped_in_after_inventory_is_not_followed`, `test_reading_a_manifest_refuses_links_and_fifos_that_appear_after_the_check` |
-| Non-regular manifests, unreadable paths, no unsafe reads | `test_a_manifest_that_is_not_a_regular_file_is_excluded_without_being_read`, `test_a_manifest_swapped_for_a_fifo_after_inventory_is_never_blocked_on`, `test_unreadable_child_directory_and_manifest_with_permission_bits` (skipped as root), `test_unreadable_paths_by_fault_injection_even_where_modes_are_ignored`, `test_entry_that_cannot_be_examined_is_unassessed_and_peers_continue`, `test_manifest_that_vanishes_or_fails_midway_is_reported_not_guessed`, `test_invalid_collections_get_a_bounded_refusal`, `test_unreadable_collection_directory` (skipped as root), `test_unreadable_collection_by_fault_injection`, `test_a_collection_path_that_cannot_be_used_at_all_is_a_refusal` |
-| Mixed valid, malformed and unreadable candidates; duplicate ids | `test_mixed_valid_malformed_and_unreadable_candidates_in_one_report`, `test_duplicate_ids_keep_every_path_and_assessment_and_fail_the_command` |
+| Final root, child and manifest links refused; ancestor links allowed; races | `test_a_link_at_the_collection_root_is_refused`, `test_links_in_ancestor_components_resolve_normally`, `test_links_at_child_and_manifest_level_are_excluded_and_not_followed`, `test_a_link_swapped_in_after_inventory_is_not_followed`, `test_a_manifest_swapped_for_a_link_or_fifo_between_the_check_and_the_open_is_refused` (child process with a timeout) |
+| Non-regular manifests, unreadable paths, no unsafe reads | `test_a_manifest_that_is_not_a_regular_file_is_excluded_without_being_read`, `test_a_manifest_swapped_for_a_fifo_before_the_read_pass_is_excluded_by_the_lstat_recheck`, `test_unreadable_child_directory_and_manifest_with_permission_bits` (skipped as root), `test_unreadable_paths_by_fault_injection_even_where_modes_are_ignored`, `test_entry_that_cannot_be_examined_is_unassessed_and_peers_continue`, `test_manifest_that_vanishes_or_fails_midway_is_reported_not_guessed`, `test_invalid_collections_get_a_bounded_refusal`, `test_unreadable_collection_directory` (skipped as root), `test_unreadable_collection_by_fault_injection`, `test_a_collection_path_that_cannot_be_used_at_all_is_a_refusal` |
+| Mixed valid, malformed and unreadable candidates; duplicate ids | `test_mixed_valid_malformed_and_unreadable_candidates_in_one_report`, `test_duplicate_ids_keep_every_path_and_assessment_and_fail_the_command`, `test_duplicate_paths_are_complete_in_entries_and_json_but_shortened_in_the_text_summary` |
 | Declared stage versus readiness | `test_declared_done_with_a_stale_approval_is_not_ready` |
 | Context, decisions and advice | `test_context_and_decisions_map_to_advice_in_the_fixed_category_order`, `test_identical_action_references_are_listed_once_but_diagnostics_are_not_merged`, `test_warnings_alone_keep_a_stage_ready_and_the_exit_zero`, `test_other_context_problems_map_to_inspect_diagnostic`, `test_unreadable_context_message_is_normalized_and_keeps_code_and_location` |
 | Parity with the O1 commands | `test_overview_agrees_with_validate` |
@@ -272,8 +289,9 @@ Every item is an offline pytest test in `tests/test_overview.py` unless noted.
 | Stable output regardless of creation or enumeration order | `test_listing_is_sorted_by_bytes_and_ignores_creation_and_enumeration_order` |
 | 100 and 101 candidates; 1000 and 1001 entries | `test_one_hundred_candidates_are_accepted_and_a_hundred_and_one_refused`, `test_a_thousand_entries_are_accepted_and_a_thousand_and_one_refused`, `test_entry_limit_stops_listing_instead_of_reading_everything` |
 | At and over 1,048,576 serialised bytes | `test_json_at_the_output_limit_is_delivered_and_one_byte_more_is_not`, `test_json_size_boundary_is_inclusive_of_the_final_line_feed`, `test_over_limit_output_is_a_bounded_refusal_that_keeps_the_flags` |
-| Failure during enumeration; preflight precedence; stdout and programming errors | `test_failure_partway_through_the_listing_is_a_whole_refusal`, `test_preflight_order_is_mapping_before_collection`, `test_broken_stdout_reports_a_nonzero_exit_without_retrying`, `test_programming_errors_are_not_reported_as_partial_results` |
+| Failure during enumeration; preflight precedence; stdout and programming errors | `test_failure_partway_through_the_listing_is_a_whole_refusal`, `test_preflight_order_is_mapping_before_collection`, `test_programming_errors_are_not_reported_as_partial_results` |
+| Output delivery: full write, short, zero and `None` counts, raised write and flush errors, text refusal, real non-blocking pipes | `test_a_complete_write_and_flush_is_delivered_once`, `test_a_write_that_does_not_report_the_full_length_is_a_delivery_failure`, `test_a_raised_write_or_flush_error_is_a_delivery_failure_without_retrying`, `test_a_text_refusal_never_touches_standard_output`, `test_a_real_nonblocking_pipe_that_cannot_take_the_document_is_a_delivery_failure` and `test_an_unbuffered_process_exits_1_when_its_pipe_cannot_take_the_document` (child processes with timeouts; Linux only, they need `F_SETPIPE_SZ`) |
 | No mutation, network, subprocess or manifest code | `test_overview_makes_no_writes_spawns_nothing_and_opens_no_sockets`, `test_the_overview_modules_import_nothing_that_could_spawn_or_connect`, `test_a_child_process_leaves_the_tree_byte_identical_with_bytecode_disabled`, `test_manifest_code_is_never_imported_or_executed` |
-| Existing commands unchanged; command in the installed distribution | `test_the_overview_command_is_listed_and_o1_commands_are_unchanged`, the unchanged O1 modules, `test_packaging.py` (marker `packaging`) |
+| Existing commands unchanged; command in the installed distribution | `test_the_overview_command_is_listed_beside_the_o1_commands_in_help` (names only), the O1 modules and their tests, which this slice does not change, `test_packaging.py` (marker `packaging`) |
 
 The read-only test compares content, type, permission bits, size and modification time before and after, and ignores access times: an operating system updating `atime` when a file is read is not an application write.

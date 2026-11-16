@@ -485,10 +485,18 @@ def cmd_overview(args: argparse.Namespace) -> int:
         for diag in delivered.diagnostics:
             _err(diag.format())
         return EXIT_REFUSED
+    data = rendered.data
     try:
-        sys.stdout.buffer.write(rendered.data)
-        sys.stdout.buffer.flush()
+        # An unbuffered or raw stream can accept fewer bytes than offered, or none
+        # (None on a full non-blocking pipe), without raising. Only a count equal to
+        # the document length is a delivery; anything else is a failure.
+        written: int | None = sys.stdout.buffer.write(data)
+        delivered_in_full = written == len(data)
+        if delivered_in_full:
+            sys.stdout.buffer.flush()
     except OSError:
+        delivered_in_full = False
+    if not delivered_in_full:
         # Whatever reached the reader may be a cut-off document; do not retry.
         _abandon_stdout()
         _err(

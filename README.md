@@ -128,7 +128,8 @@ omnitient overview work --root repo=$HOME/src/my-repo --json
 
 Exit codes: `0` success; `1` refused or invalid input; `2` usage error; `3` valid but not ready for the requested stage.
 `overview` reports its own outcomes with `0` and `1` only; a usage error is still `2`, and it never exits `3`.
-Blocked valid packages alone do not fail it, but a malformed, linked or unreadable candidate, a duplicate package id or a refusal does.
+Blocked valid packages alone do not fail it, but a malformed, unreadable, non-regular or linked manifest or candidate, a duplicate package id, a refusal or a failure to deliver the report to standard output does.
+The report is built completely before it is written, but a delivery failure can still leave the reader with partial output: the exit status `1` and the `error[overview.stdout]` line on stderr are the signal.
 
 ## Things worth knowing
 
