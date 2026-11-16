@@ -122,7 +122,16 @@ Approval records are workflow provenance (who recorded approval of which revisio
 
 - _none_
 
-## 10. Context
+## 10. Delivery
+
+Delivery records are workflow provenance: who recorded the acceptance or withdrawal of which revision, and when. They are not authentication, they do not verify any artifact, they are independent of readiness and approvals, and they grant no permission to execute anything. A declared stage of done is not an acceptance.
+
+- State: `unavailable`
+- Current-revision acceptance: _none_
+- Acceptances: 0; withdrawals: 0; withdrawn acceptances: 0; unwithdrawn at a prior revision: 0
+- Manifest schema version 1 cannot hold delivery records.
+
+## 11. Context
 
 ### Context `contract`
 
@@ -974,10 +983,11 @@ def evaluate_all(
     return {stage: evaluate(pkg, resolved, stage) for stage in HANDOFF_STAGES}
 ````
 
-## 11. Provenance
+## 12. Provenance
 
 - Package: `omnitient/provenance/o2-git-pinned-context`
 - Revision: `c669932f470a5eeb86ece52903c8be7cd653354a0b16394749db4db4e2dc1489`
+- Digest scheme: `covered-sha256-v1`
 - Package schema: `omnitient/work-package` version 1
-- Handoff schema: `omnitient/handoff` version 1
+- Handoff schema: `omnitient/handoff` version 2
 - This document contains no generation time and no host paths; identical inputs give identical output.

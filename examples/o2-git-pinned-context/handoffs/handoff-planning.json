@@ -1,6 +1,6 @@
 {
   "schema": "omnitient/handoff",
-  "schema_version": 1,
+  "schema_version": 2,
   "target_stage": "planning",
   "status": "blocked",
   "draft": true,
@@ -42,6 +42,8 @@
     "work_package": "o2-git-pinned-context",
     "title": "Verify pinned Git revisions of context locally",
     "stage": "draft",
+    "manifest_schema_version": 1,
+    "digest_scheme": "covered-sha256-v1",
     "content_digest": "c669932f470a5eeb86ece52903c8be7cd653354a0b16394749db4db4e2dc1489",
     "objective": "O1 records the Git revision a context file was taken from but never checks it.\nLet a package verify, from a local repository only, that a pinned revision exists and that the file at that revision has the expected digest, so a handoff can say whether the supplied content really corresponds to the pinned revision.\nVerification is read-only and optional; packages without git provenance behave exactly as in O1.",
     "scope": [
@@ -133,6 +135,17 @@
   },
   "evidence": [],
   "approvals": [],
+  "delivery": {
+    "statement": "Delivery records are workflow provenance: who recorded the acceptance or withdrawal of which revision, and when. They are not authentication, they do not verify any artifact, they are independent of readiness and approvals, and they grant no permission to execute anything. A declared stage of done is not an acceptance.",
+    "state": "unavailable",
+    "current_revision_acceptance": null,
+    "prior_revision_unwithdrawn_count": 0,
+    "withdrawn_acceptance_count": 0,
+    "acceptance_count": 0,
+    "withdrawal_count": 0,
+    "records": [],
+    "diagnostics": []
+  },
   "context": [
     {
       "id": "contract",

@@ -87,6 +87,9 @@ def _entry(entry: Entry) -> dict[str, Any]:
                 "title": package.title,
                 "declared_stage": package.declared_stage,
                 "content_digest": package.content_digest,
+                "manifest_schema_version": package.manifest_schema_version,
+                "digest_scheme": package.digest_scheme,
+                "delivery": package.delivery.to_dict(),
             }
         ),
         "diagnostics": [_diagnostic(d) for d in entry.diagnostics],
@@ -225,8 +228,10 @@ def _entry_lines(entry: Entry) -> list[str]:
         lines.append(
             f'  {package.id}  "{shorten(package.title, _TITLE_WIDTH)}"  '
             f"declared stage: {package.declared_stage}  "
-            f"revision: {package.content_digest[:12]}"
+            f"revision: {package.content_digest[:12]}  "
+            f"manifest: v{package.manifest_schema_version}"
         )
+        lines.append(f"  delivery: {escape_text(package.delivery.describe())}")
     lines += [_diag_line(d, "  ") for d in entry.diagnostics]
     for report in entry.readiness or ():
         state = (

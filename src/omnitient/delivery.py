@@ -311,6 +311,43 @@ def history_dict(pkg: WorkPackage) -> list[dict[str, Any]]:
     return out
 
 
+def compact_records(pkg: WorkPackage) -> list[dict[str, Any]]:
+    """Ids and linkage only, for the overview and handoffs: no reasons, no snapshots."""
+    by_id = {s.record.operation_id: s for s in acceptance_statuses(pkg)}
+    out: list[dict[str, Any]] = []
+    for record in pkg.delivery:
+        if isinstance(record, Acceptance):
+            status = by_id[record.operation_id]
+            out.append(
+                {
+                    "operation_id": record.operation_id,
+                    "kind": "acceptance",
+                    "revision": record.revision.digest,
+                    "state": status.state,
+                    "withdrawn_by": status.withdrawn_by,
+                }
+            )
+        else:
+            out.append(
+                {
+                    "operation_id": record.operation_id,
+                    "kind": "withdrawal",
+                    "target_acceptance_id": record.target_acceptance_id,
+                }
+            )
+    return out
+
+
+def delivery_dict(pkg: WorkPackage) -> dict[str, Any]:
+    """The compact delivery block of the overview and handoffs."""
+    diag = reserve_deficit_diagnostic(pkg)
+    return {
+        **summarize(pkg).to_dict(),
+        "records": compact_records(pkg),
+        "diagnostics": [diag.to_dict()] if diag else [],
+    }
+
+
 # --- requests ---------------------------------------------------------------
 
 

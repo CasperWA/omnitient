@@ -45,6 +45,7 @@ from omnitient.model import (
     WorkPackage,
 )
 from omnitient.overview import collection_overview
+from omnitient.overview_render import escape_text
 from omnitient.readiness import Readiness
 from omnitient.rules import SHA256
 from omnitient.schema import parse_package
@@ -179,6 +180,47 @@ def cmd_validate(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+SHOW_SCHEMA = "omnitient/show"
+SHOW_SCHEMA_VERSION = 1
+
+
+def _show_delivery(pkg: WorkPackage) -> dict[str, object]:
+    reserve = delivery.reserve_of(pkg)
+    diag = delivery.reserve_deficit_diagnostic(pkg)
+    return {
+        "summary": delivery.summarize(pkg).to_dict(),
+        "reserve": reserve.to_dict() if reserve else None,
+        "diagnostics": [diag.to_dict()] if diag else [],
+        "history": delivery.history_dict(pkg),
+    }
+
+
+def _delivery_show_lines(pkg: WorkPackage) -> list[str]:
+    summary = delivery.summarize(pkg)
+    lines = [f"delivery: {summary.describe()}"]
+    statuses = {s.record.operation_id: s for s in delivery.acceptance_statuses(pkg)}
+    for record in pkg.delivery:
+        if isinstance(record, Acceptance):
+            status = statuses[record.operation_id]
+            linked = (
+                f", withdrawn by {status.withdrawn_by}" if status.withdrawn_by else ""
+            )
+            lines.append(
+                f"  {record.operation_id} acceptance of revision "
+                f"{record.revision.digest[:12]} by {escape_text(record.actor)} at "
+                f"{record.recorded_at} [{status.state}{linked}]"
+            )
+        else:
+            lines.append(
+                f"  {record.operation_id} withdrawal of {record.target_acceptance_id} "
+                f"by {escape_text(record.actor)} at {record.recorded_at}"
+            )
+    diag = delivery.reserve_deficit_diagnostic(pkg)
+    if diag:
+        lines.append(f"  {diag.format()}")
+    return lines
+
+
 def cmd_show(args: argparse.Namespace) -> int:
     assessed = _assess(args)
     pkg, reports = assessed.loaded.package, assessed.reports
@@ -188,9 +230,13 @@ def cmd_show(args: argparse.Namespace) -> int:
         _out(
             _json(
                 {
+                    "schema": SHOW_SCHEMA,
+                    "schema_version": SHOW_SCHEMA_VERSION,
                     "package": pkg.package_id,
                     "title": pkg.title,
                     "stage": pkg.stage,
+                    "manifest_schema_version": pkg.schema_version,
+                    "digest_scheme": pkg.digest_scheme,
                     "content_digest": digest,
                     "counts": {
                         "scope": len(pkg.scope),
@@ -201,6 +247,7 @@ def cmd_show(args: argparse.Namespace) -> int:
                         "context": len(pkg.context),
                         "evidence": len(pkg.evidence),
                         "approvals": len(pkg.approvals),
+                        "delivery": len(pkg.delivery),
                     },
                     "decisions": [
                         {
@@ -235,6 +282,7 @@ def cmd_show(args: argparse.Namespace) -> int:
                     "evidence": [
                         {"id": e.id, "kind": e.kind, "ref": e.ref} for e in pkg.evidence
                     ],
+                    "delivery": _show_delivery(pkg),
                     "readiness": {s: r.ready for s, r in reports.items()},
                 }
             )
@@ -242,6 +290,7 @@ def cmd_show(args: argparse.Namespace) -> int:
         return EXIT_OK
 
     _out(f"{pkg.package_id}  stage={pkg.stage}  revision={digest[:12]}")
+    _out(f"manifest: schema v{pkg.schema_version}, digest scheme {pkg.digest_scheme}")
     _out(f"title: {pkg.title}")
     _out(f"objective: {_truncate(pkg.objective, 100)}")
     _out(
@@ -269,6 +318,8 @@ def cmd_show(args: argparse.Namespace) -> int:
     _out(f"evidence: {len(pkg.evidence)}")
     for e in pkg.evidence:
         _out(f"  {e.id} {e.kind} {e.ref}")
+    for line in _delivery_show_lines(pkg):
+        _out(line)
     _out("readiness:")
     for report in reports.values():
         _out(f"  {_readiness_lines(report)[0]}")
@@ -519,7 +570,7 @@ def _delivery_lines(planned: delivery.Planned, pkg: WorkPackage) -> list[str]:
                 f"{verb} acceptance {record.operation_id}: {record.package_id} "
                 f"revision {record.revision.digest[:12]} "
                 f"({record.revision.scheme}), evidence {ids}; recorded "
-                f"{record.recorded_at} by {record.actor}{tail}"
+                f"{record.recorded_at} by {escape_text(record.actor)}{tail}"
             ),
             f"status: {_status_text(planned.status, pkg)}",
         ]
@@ -527,7 +578,7 @@ def _delivery_lines(planned: delivery.Planned, pkg: WorkPackage) -> list[str]:
         (
             f"{verb} withdrawal {record.operation_id} of acceptance "
             f"{record.target_acceptance_id}; recorded {record.recorded_at} by "
-            f"{record.actor}{tail}"
+            f"{escape_text(record.actor)}{tail}"
         ),
         f"acceptance {record.target_acceptance_id}: {_status_text(planned.status, pkg)}",
     ]
