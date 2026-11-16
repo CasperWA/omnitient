@@ -1,0 +1,94 @@
+{
+  "schema": "omnitient/work-package",
+  "schema_version": 1,
+  "project": "omnitient",
+  "initiative": "foundation",
+  "work_package": "o3-closeout",
+  "title": "Delivery records: acceptance, withdrawal and manifest v2 (O3 R1)",
+  "stage": "draft",
+  "objective": "Implement release R1 of O3: record in a work package, as provenance, that a revision was accepted as delivered and that such an acceptance was withdrawn, without verifying any artifact or running anything.\nR1 adds manifest schema v2 (a separate axis from product release v1) with an ordered, typed, append-only delivery history outside the approval-covered digest; explicit closeout and withdraw operations with exact-retry replay semantics, evidence snapshots and a fixed count and byte capacity with a withdrawal reserve; an explicit, hash-guarded v1 to v2 upgrade; and compact delivery summaries in show, overview and handoffs.\nThe accepted O2 baseline is the landed commit a666c70b3dbf7182f206dd9ffc896a582103512f. The ratified technical contract is docs/o3-closeout-contract.md; AC01 to AC24 there are the acceptance criteria. This package is a v1 bootstrap: the tooling that existed before O3 only supports v1.",
+  "scope": [
+    "Manifest v2 with a typed delivery history, strict parsing and serialization, digest scheme labels, and an unchanged v1 digest and serialization.",
+    "Compatibility fixtures for v1 digests and stored bytes, added before digest or serialization behaviour changes.",
+    "closeout (acceptance) with evidence snapshots, eligibility checks, request equality, replay and conflict handling.",
+    "withdraw, reacceptance, and active, prior-revision and withdrawn display derivation.",
+    "Fixed count and byte capacity with a withdrawal reserve preserved by every supported v2 writer, and the narrow recovery exception.",
+    "upgrade preview and hash-guarded apply from v1 to v2, tested on synthetic fixtures only.",
+    "Delivery summaries in show (with a versioned JSON form), overview and handoffs; bumped overview and handoff output versions; a second JSON Schema resource and schema selection.",
+    "Documentation of the contract and a verification map from AC01 to AC24 to tests, results and limitations."
+  ],
+  "exclusions": [
+    "Upgrading any real package, including this one, o2-overview and the committed example.",
+    "Closing out, withdrawing, or otherwise accepting any real package.",
+    "Recording an approval on anyone's behalf, or repinning or repairing an existing package to make readiness green.",
+    "Reading, fetching or verifying any artifact that evidence names; any network, subprocess, model, agent or Git activity in the new operations.",
+    "Independent review, push, pull request, remote CI, merge or deployment.",
+    "Bulk migration, downgrade, automatic upgrade, a generic query subsystem, and any change to the handoff bundle manifest format."
+  ],
+  "acceptance": [
+    "AC01 Format separation: v1 keeps its legacy digest and serialization; v2 history round-trips; unknown fields and versions fail closed; new default v2 leaves existing packages alone.",
+    "AC02 Digest transition: an explicit upgrade changes the revision and stales retained approvals; delivery appends and withdrawals leave the covered revision unchanged.",
+    "AC03 Upgrade preview: deterministic, reports the actual file hash, writes nothing, and does no context, artifact, Git or network work.",
+    "AC04 Upgrade apply: a matching guard changes only the selected valid v1 fixture and preserves unrelated content; drift and over-limit input refuse.",
+    "AC05 Upgrade retry: the old hash after success refuses with inspection guidance; v2 preview and no-op are truthful; no fabricated receipt.",
+    "AC06 Acceptance eligibility: code, documentation, report-only and investigation fixtures are supported; structural gaps, bad requests, a wrong revision and v1 refuse.",
+    "AC07 Readiness independence: missing or stale approval, context mismatch and unresolved decisions do not prevent an eligible acceptance, and their diagnostics and the stage stay unchanged.",
+    "AC08 Snapshot integrity: 1 to 20 distinct existing evidence ids; exact metadata and fingerprints; no artifact reads.",
+    "AC09 History independence: live evidence changes do not rewrite or revalidate snapshots; covered changes create a prior-revision association.",
+    "AC10 Withdrawal: an append-only record for an exact target that preserves the original and stage and ends its active display; a prior-revision target is allowed.",
+    "AC11 Withdrawal errors: unknown or non-acceptance targets, a repeated withdrawal under a new id and malformed fields refuse; no undo and no cascade.",
+    "AC12 Reacceptance: the same current revision can be accepted again under a new id with normal validation, retaining the original and the withdrawal.",
+    "AC13 Request equality: only evidence order is irrelevant; nothing else is normalized, and repeated ids refuse.",
+    "AC14 True replay: the original record is returned with no file-system write, at the limits and after drift or withdrawal, never reactivating a record.",
+    "AC15 Concurrency: stale snapshots, competing writes and locks refuse without a lost record or automatic retry.",
+    "AC16 Persistence failures: failure before replacement preserves the original; success followed by output failure is reported distinctly and replays safely.",
+    "AC17 Count bounds: 100 records including reserved slots; at most 50 acceptances; a withdrawal consumes its reserved slot.",
+    "AC18 Byte and text bounds: 262144 bytes including the reserve, 20 references and 8192 UTF-8 bytes of reason, at and beyond the bounds, with no truncation or override.",
+    "AC19 Reserve preservation: every supported v2 writer preserves the reserve; v1 is unchanged; the narrow recovery exception works and keeps a remaining deficit visible.",
+    "AC20 Read diagnostics: current, prior, withdrawn and none states and mixed history are correct; invalid is not none; declared done is not acceptance.",
+    "AC21 Output formats: the latest versioned show, overview and handoff for both formats; the actual package version; exact-byte bundle verification preserved.",
+    "AC22 Safe bounded rendering: authored text is quoted or escaped; outputs are bounded and deterministic; no silent truncation and no new host paths.",
+    "AC23 No unintended actions: the new operations have no network, subprocess, model, agent, artifact-fetch or Git activity, and read paths do not mutate.",
+    "AC24 Regression and synthetic lifecycle: focused and full local checks cover v1, v2, schema resources, installation and O1 and O2 behaviour, with the complete lifecycle exercised on synthetic packages only."
+  ],
+  "dependencies": [],
+  "roots": [
+    {
+      "name": "omnitient",
+      "description": "This repository checkout; the host directory is supplied per invocation."
+    }
+  ],
+  "context": [
+    {
+      "id": "o3-contract",
+      "root": "omnitient",
+      "path": "docs/o3-closeout-contract.md",
+      "sha256": "dbe1ac38dae561df1e125dd6dd5f40c0d501bf3fe10f10940d715c104560bd6c",
+      "required": true,
+      "mode": "embed",
+      "purpose": "The ratified R1 technical contract and AC01-AC24"
+    },
+    {
+      "id": "o1-contract",
+      "root": "omnitient",
+      "path": "docs/o1-contract.md",
+      "sha256": "0c9c191908dc346438afd762b8c757ec988d5b14c39a016836a752bd591e23f1",
+      "required": true,
+      "mode": "embed",
+      "purpose": "The O1 specification that O3 extends"
+    },
+    {
+      "id": "agents-guide",
+      "root": "omnitient",
+      "path": "AGENTS.md",
+      "sha256": "7e718ef76294a506e0fd142797493c655dcdcf72259c41eeace3ed71020cadcc",
+      "required": true,
+      "mode": "embed",
+      "purpose": "Repository rules for agents"
+    }
+  ],
+  "decisions": [],
+  "recommendations": [],
+  "evidence": [],
+  "approvals": []
+}
