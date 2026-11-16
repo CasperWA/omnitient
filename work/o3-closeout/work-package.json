@@ -5,7 +5,7 @@
   "initiative": "foundation",
   "work_package": "o3-closeout",
   "title": "Delivery records: acceptance, withdrawal and manifest v2 (O3 R1)",
-  "stage": "draft",
+  "stage": "implementation",
   "objective": "Implement release R1 of O3: record in a work package, as provenance, that a revision was accepted as delivered and that such an acceptance was withdrawn, without verifying any artifact or running anything.\nR1 adds manifest schema v2 (a separate axis from product release v1) with an ordered, typed, append-only delivery history outside the approval-covered digest; explicit closeout and withdraw operations with exact-retry replay semantics, evidence snapshots and a fixed count and byte capacity with a withdrawal reserve; an explicit, hash-guarded v1 to v2 upgrade; and compact delivery summaries in show, overview and handoffs.\nThe accepted O2 baseline is the landed commit a666c70b3dbf7182f206dd9ffc896a582103512f. The ratified technical contract is docs/o3-closeout-contract.md; AC01 to AC24 there are the acceptance criteria. This package is a v1 bootstrap: the tooling that existed before O3 only supports v1.",
   "scope": [
     "Manifest v2 with a typed delivery history, strict parsing and serialization, digest scheme labels, and an unchanged v1 digest and serialization.",
@@ -90,5 +90,14 @@
   "decisions": [],
   "recommendations": [],
   "evidence": [],
-  "approvals": []
+  "approvals": [
+    {
+      "id": "A1",
+      "stage": "implementation",
+      "approved_by": "casper.w.andersen@sintef.no",
+      "approved_at": "2026-11-16T14:22:58Z",
+      "content_digest": "843cb77571ea84a9197d285603cdca744a2033b9ecf912aa9fba004d7733791d",
+      "note": "Owner approval of the exact bootstrap revision for the implementation stage, given interactively in the implementation session."
+    }
+  ]
 }
