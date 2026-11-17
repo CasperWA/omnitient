@@ -150,7 +150,7 @@ def test_the_stored_record_key_order_is_fixed(v2_package: WorkPackage) -> None:
 # --- fail closed on unknown fields and versions (AC01) -------------------------
 
 
-@pytest.mark.parametrize("version", [0, 3, True, "2", 2.0, 1.0, None, [2]])
+@pytest.mark.parametrize("version", [0, 3, True, False, "2", 2.0, 1.5, None, [2]])
 def test_other_schema_versions_are_refused(
     v2_package: WorkPackage, version: Any
 ) -> None:
@@ -159,6 +159,24 @@ def test_other_schema_versions_are_refused(
     result = parse_package(json.dumps(data).encode("utf-8"))
     assert result.package is None
     assert "schema.version" in {d.code for d in result.diagnostics}
+
+
+@pytest.mark.parametrize("spelling", ["2.0", "2e0", "2E0", "20e-1"])
+def test_v2_refuses_float_spellings_of_two(
+    v2_package: WorkPackage, spelling: str
+) -> None:
+    raw = dumps(v2_package).decode("utf-8")
+    line = '"schema_version": 2'
+    assert line in raw
+    result = parse_package(raw.replace(line, f'"schema_version": {spelling}').encode())
+    assert result.package is None
+    assert "schema.version" in {d.code for d in result.diagnostics}
+
+
+def test_v2_accepts_integer_two(v2_package: WorkPackage) -> None:
+    result = parse_package(dumps(v2_package))
+    assert result.package == v2_package
+    assert result.package.schema_version == 2
 
 
 def test_a_v1_reader_refuses_a_v2_file_with_the_existing_code(

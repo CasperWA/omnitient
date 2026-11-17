@@ -674,8 +674,11 @@ def parse_package(raw: bytes) -> ParseResult:
     if version is not _MISSING:
         if (
             isinstance(version, bool)
-            or not isinstance(version, int)
+            or not isinstance(version, int | float)
             or version not in SCHEMA_VERSIONS
+            # Legacy v1 accepted any JSON number equal to 1 (1.0, 1e0); that is
+            # kept. v2 is new and requires a true integer.
+            or (isinstance(version, float) and version != SCHEMA_VERSION_1)
         ):
             r.error(
                 "schema_version",
@@ -684,7 +687,7 @@ def parse_package(raw: bytes) -> ParseResult:
                 "schema.version",
             )
             return ParseResult(None, tuple(diags))
-        format_version = version
+        format_version = int(version)
     slug = "a slug (lowercase letters, digits, '-'; max 63)"
     pkg = WorkPackage(
         project=_s(r.pattern("project", rules.SLUG, slug)),

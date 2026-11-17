@@ -10,10 +10,12 @@ SPDX-License-Identifier: MIT
 This maps each acceptance criterion of [the O3 contract](o3-closeout-contract.md), section 12, to the tests that check it, the result and any limitation.
 A criterion is a requirement, not a claim that it passed: each result below says what was run on the candidate.
 The results were produced locally on Python 3.12.16; they are not a review and do not replace one.
+Results in the table are from the earlier candidate (4f2f550) unless a row says otherwise; the correction round after it is recorded in [Correction round: legacy v1 version spellings](#correction-round-legacy-v1-version-spellings).
+Nothing here claims that every criterion has been independently verified.
 
 | Criterion | Tests | Result | Limitation |
 | --- | --- | --- | --- |
-| AC01 | `test_v1_compat.py` (all four: golden digest, covered projection, stored bytes, the two real v1 packages), `test_v2_schema.py::test_v1_stays_v1_through_the_parser_and_the_serializer`, `::test_v2_history_round_trips_byte_for_byte`, `::test_other_schema_versions_are_refused`, `::test_delivery_is_not_allowed_in_v1`, `::test_delivery_is_required_in_v2`, `::test_unknown_fields_are_rejected_at_every_level`, `::test_new_packages_are_v2_with_an_empty_history`, `test_delivery_safety.py::test_v1_writers_are_unchanged` | The golden values were recorded from the code before any digest change (commit 4865a44) and still pass. | A JSON `1.0` or `2.0` is now refused as a version (integer required); the earlier parser would have accepted `1.0`. Stored files never contain it. |
+| AC01 | `test_v1_compat.py` (all four: golden digest, covered projection, stored bytes, the two real v1 packages), `test_v2_schema.py::test_v1_stays_v1_through_the_parser_and_the_serializer`, `::test_v2_history_round_trips_byte_for_byte`, `::test_other_schema_versions_are_refused`, `::test_delivery_is_not_allowed_in_v1`, `::test_delivery_is_required_in_v2`, `::test_unknown_fields_are_rejected_at_every_level`, `::test_new_packages_are_v2_with_an_empty_history`, `test_delivery_safety.py::test_v1_writers_are_unchanged` | The golden values were recorded from the code before any digest change (commit 4865a44) and still pass. | Candidate 4f2f550 refused a JSON `1.0` as a v1 version, which the earlier parser accepted; that was a regression and is corrected in the round below (v1 accepts numeric spellings equal to 1, v2 requires the integer 2). Stored files never contain either spelling. |
 | AC02 | `test_v2_schema.py::test_upgrade_changes_the_revision_and_keeps_everything_else`, `::test_upgrade_never_synthesizes_an_approval_or_changes_the_stage`, `::test_delivery_is_outside_the_covered_projection`, `::test_the_digest_uses_the_packages_own_schema_version`, `test_closeout_cli.py::test_apply_changes_only_the_format`, `test_delivery.py::test_a_withdrawal_appends_one_record_and_keeps_everything`, `test_v1_compat.py` | Pass. |  |
 | AC03 | `test_closeout_cli.py::test_the_preview_reports_the_change_and_writes_nothing` (no context, mapping or readiness call; identical second preview; tree unchanged), `test_delivery_safety.py::test_read_paths_make_no_files_even_in_a_read_only_directory`, `::test_no_command_spawns_connects_scans_or_reads_the_artifacts_evidence_names` | Pass. | The "no Git or network" claim is shown by audit events and import checks on the exercised paths, not by a proof over all code. |
 | AC04 | `test_closeout_cli.py::test_apply_changes_only_the_format` (a second package in the directory is untouched), `::test_apply_needs_a_valid_guard`, `::test_a_wrong_hash_or_drift_since_the_preview_refuses` (evidence-only drift), `::test_an_oversized_result_refuses_in_preview_and_apply`, `::test_an_invalid_package_is_not_upgraded`, `::test_only_version_2_exists_and_there_is_no_downgrade` | Pass. | Applying re-serializes in the canonical form, as every write does (O1 section 10). |
@@ -42,7 +44,7 @@ The results were produced locally on Python 3.12.16; they are not a review and d
 
 These resolve details the contract leaves open, beyond the interpretations in [section 13 of the contract](o3-closeout-contract.md); each is reversible.
 
-1. **Integer versions only.** `schema_version` must be a JSON integer; `1.0` and `2.0` are refused for both formats.
+1. **Legacy v1 spellings kept; v2 strict.** *(Corrected; the candidate required integers for both formats.)* A v1 `schema_version` may be any non-boolean JSON number equal to 1 (`1`, `1.0`, `1e0`), as before O3, and is normalized to the integer 1. A v2 `schema_version` must be the integer `2`; `2.0` and `2e0` are refused. Booleans, strings, null and other numbers are refused for both.
 2. **Replay never needs the live package to be eligible.** A saved operation id is recognized, and compared, before any gate, so a replay works for a package that has since drifted, lost evidence, been left over-reserve or become incomplete.
 3. **Count-only deficit.** `2A` cannot be reduced by a withdrawal, so a package that exceeds the count invariant (and not the byte one) accepts no recovery withdrawal. The arithmetic is tested; a file with 51 or more active acceptances cannot be built with the tool (14 active acceptances with the smallest possible records already exhaust the bytes), only by hand, and a hand-built one would also exceed the byte invariant.
 4. **Ordinary writers refuse any deficient result.** Even a write that shrinks a deficient package is refused unless it is a deficit-reducing withdrawal.
@@ -50,3 +52,21 @@ These resolve details the contract leaves open, beyond the interpretations in [s
 6. **`omnitient schema` defaults to v1** so existing callers see the same bytes.
 7. **The placeholder-objective rule is shared.** `delivery.py` imports the pattern from `readiness.py` rather than copying it, and does not call `readiness.evaluate`, so acceptance evaluates no readiness.
 8. **Test helpers are shared between test modules** by importing the first-defined module (for example `test_delivery.padded`), because the repository's naming hook allows only `test_*.py` files and `conftest.py` in `tests/`.
+
+## Correction round: legacy v1 version spellings
+
+The owner authorized one bounded correction after the candidate (4f2f550): restore the earlier acceptance of numeric `schema_version` 1.0 for v1, keep strict integer validation for v2, add regression coverage and record the example-fixture exception below.
+
+**The change.** `parse_package` in `src/omnitient/schema.py` accepts a non-boolean JSON number equal to 1 as v1 and stores the integer 1; a float is never accepted as v2. The parser does not rewrite input bytes. The covered digest, the digest labels and the canonical serialization are untouched, and no golden value was changed.
+
+**New and adjusted coverage.**
+
+- `test_v1_compat.py::test_v1_accepts_every_numeric_spelling_of_one` (`1`, `1.0`, `1e0`, `1E0`, `1.0e0`, `10e-1`): the same model as the stored golden package, an integer `schema_version`, the golden digest, covered projection and canonical bytes.
+- `test_v1_compat.py::test_v1_refuses_other_version_values` (`true`, `false`, a string, null, a list, `0`, `0.0`, `1.5`, `2.0`, `3`, `-1`, `1e400`).
+- `test_v2_schema.py::test_v2_refuses_float_spellings_of_two` (`2.0`, `2e0`, `2E0`, `20e-1`) and `::test_v2_accepts_integer_two`.
+- `test_v2_schema.py::test_other_schema_versions_are_refused`: `1.0` removed from the refused list (now valid for v1); `False` and `1.5` added.
+- The existing golden tests (digest, projection, stored bytes, the two real v1 packages) passed unchanged.
+
+**Results (correction round, Python 3.12.16).** The focused modules `test_v1_compat.py` and `test_v2_schema.py`: 96 passed. The full suite including the packaging tests: 697 passed (the candidate's earlier log showed 673 passed; it did not identify the commit and is not restated as provenance). `pre-commit run --all-files` passed all hooks on the final source; its first run had markdownlint reformat this file, and the hooks were then run again. Only documentation text was edited after those runs, and the documentation hooks were repeated on it. These are local results, not a review.
+
+**Accepted example-fixture exception.** While implementing the candidate, `examples/o2-git-pinned-context/handoffs/handoff-planning.json` and `handoff-planning.md` were regenerated (see AC21) without first asking the owner; the instruction to preserve existing historical files had not been followed. The owner has since accepted a narrow exception for these two files only, treating them as living generated example fixtures whose current bytes may remain. The exception does not cover any other historical handoff, was not regenerated again in the correction round, and does not repin or rewrite any approval or package. The O2 package's fifth raw-context mismatch remains expected and visible; the O3 v1 bootstrap package is not upgraded.

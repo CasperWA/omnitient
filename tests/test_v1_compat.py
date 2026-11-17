@@ -196,3 +196,54 @@ def test_real_v1_packages_keep_their_digest_and_bytes(
     assert content_digest(parsed.package) == digest
     assert hashlib.sha256(raw).hexdigest() == file_sha
     assert dumps(parsed.package) == raw
+
+
+# --- legacy numeric spellings of the v1 format version ---------------------------
+
+_V1_VERSION_LINE = '  "schema_version": 1,\n'
+
+
+@pytest.mark.parametrize("spelling", ["1", "1.0", "1e0", "1E0", "1.0e0", "10e-1"])
+def test_v1_accepts_every_numeric_spelling_of_one(spelling: str) -> None:
+    """The earlier parser accepted any non-boolean JSON number equal to 1."""
+    assert _V1_VERSION_LINE in V1_STORED
+    raw = V1_STORED.replace(
+        _V1_VERSION_LINE, f'  "schema_version": {spelling},\n'
+    ).encode("utf-8")
+    parsed = parse_package(raw)
+    assert parsed.package is not None, parsed.diagnostics
+    assert parsed.package.schema_version == 1
+    assert type(parsed.package.schema_version) is int
+    assert content_digest(parsed.package) == V1_DIGEST
+    assert covered_dict(parsed.package)["schema_version"] == 1
+    assert dumps(parsed.package) == V1_STORED.encode("utf-8")
+    assert hashlib.sha256(dumps(parsed.package)).hexdigest() == V1_FILE_SHA256
+    assert parsed.package == parse_package(V1_STORED.encode("utf-8")).package
+
+
+@pytest.mark.parametrize(
+    "spelling",
+    [
+        "true",
+        "false",
+        '"1"',
+        "null",
+        "[1]",
+        "0",
+        "0.0",
+        "1.5",
+        "2.0",
+        "3",
+        "-1",
+        "1e400",
+    ],
+)
+def test_v1_refuses_other_version_values(spelling: str) -> None:
+    raw = V1_STORED.replace(
+        _V1_VERSION_LINE, f'  "schema_version": {spelling},\n'
+    ).encode("utf-8")
+    parsed = parse_package(raw)
+    assert parsed.package is None
+    assert "schema.version" in {d.code for d in parsed.diagnostics} or (
+        "schema.syntax" in {d.code for d in parsed.diagnostics}
+    )
