@@ -48,18 +48,32 @@ UPGRADE_HINT = (
 # --- reserve ---------------------------------------------------------------
 
 
+# The timestamp pattern (rules.TIMESTAMP) matches any Unicode decimal digit, and a
+# digit is at most four UTF-8 bytes. The complete validation (the pattern plus
+# ``strptime``) admits fewer spellings (up to 44 bytes on Python 3.12 to 3.15:
+# four-byte digits in the year and in the second digit of day, hour, minute and
+# second, never a month digit), but the bound below is taken from the pattern
+# alone, so that it does not depend on the standard library's parser.
+_WIDEST_DIGIT = "\U0001d7d8"  # MATHEMATICAL DOUBLE-STRUCK DIGIT ZERO, category Nd
+WORST_CASE_TIMESTAMP = "".join(
+    _WIDEST_DIGIT if char == "0" else char for char in "0000-00-00T00:00:00Z"
+)
+
+
 def _worst_case_withdrawal() -> Withdrawal:
     """The largest withdrawal the schema admits, for the serialized-size bound.
 
     Actor: 200 characters of 4 UTF-8 bytes each (2-byte escapes of a quote are
     smaller). Reason: 8192 bytes of one-byte characters that JSON escapes to two
     bytes (a quote, a backslash; newline and tab are the only controls allowed).
-    Every other field is at its length maximum.
+    Timestamp: the pattern's widest spelling, 14 four-byte digits (62 bytes; the
+    tool itself writes 20 ASCII bytes, but a hand-edited file may hold a wider
+    admitted spelling). Every other field is at its length maximum.
     """
     return Withdrawal(
         operation_id="W" * 32,
         actor="\U0001f600" * SHORT_MAX,
-        recorded_at="2026-12-31T23:59:59Z",
+        recorded_at=WORST_CASE_TIMESTAMP,
         reason='"' * DELIVERY_REASON_MAX_BYTES,
         target_acceptance_id="A" * 32,
     )
@@ -167,14 +181,53 @@ def reserve_deficit_diagnostic(pkg: WorkPackage) -> Diagnostic | None:
     )
 
 
+def _require_withdrawal_only(old: WorkPackage, new: WorkPackage) -> None:
+    """Refuse anything but one appended withdrawal of an unwithdrawn acceptance.
+
+    This is the whole of what the recovery exception may authorize: the earlier
+    history is unchanged, exactly one withdrawal follows it, it names an
+    acceptance that was not yet withdrawn, and every other field of the package
+    is as it was. Syntax and cross-record rules are the parser's job.
+    """
+
+    def refuse(why: str) -> OmnitientError:
+        return refusal(
+            "store.recovery",
+            "the reserve recovery exception allows only one appended withdrawal "
+            f"of an unwithdrawn acceptance, and {why}. Nothing was written.",
+            "delivery",
+        )
+
+    kept = len(old.delivery)
+    if new.delivery[:kept] != old.delivery:
+        raise refuse("this changes earlier delivery records")
+    added = new.delivery[kept:]
+    if len(added) != 1 or not isinstance(added[0], Withdrawal):
+        raise refuse(f"this appends {len(added)} record(s) that are not one withdrawal")
+    if replace(new, delivery=old.delivery) != old:
+        raise refuse("this also changes other fields of the package")
+    target = added[0].target_acceptance_id
+    if not any(
+        isinstance(d, Acceptance) and d.operation_id == target for d in old.delivery
+    ) or any(
+        isinstance(d, Withdrawal) and d.target_acceptance_id == target
+        for d in old.delivery
+    ):
+        raise refuse(f"{target} is not an acceptance that is still unwithdrawn")
+
+
 def check_reserve(
     old: WorkPackage, new: WorkPackage, *, recovery: bool = False, code: str
 ) -> None:
     """Refuse a v2 result that violates the reserve invariants.
 
-    With ``recovery`` (a withdrawal only), a result that fits the hard limits and
-    reduces the byte deficit of an already deficient package is accepted.
+    With ``recovery`` the change must first be exactly one appended withdrawal of
+    an unwithdrawn acceptance, whether or not the result is compliant; the flag
+    never authorizes anything else. Such a result that fits the hard limits and
+    reduces the byte deficit of an already deficient package is then accepted.
     """
+    if recovery:
+        _require_withdrawal_only(old, new)
     reserve = reserve_of(new)
     if reserve is None or reserve.compliant:
         return

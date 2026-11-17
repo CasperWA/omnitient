@@ -7,6 +7,9 @@
 
 ``parse_package`` collects every problem it finds instead of stopping at the
 first, and returns a package only when there are none.
+The one exception is an unsupported ``schema_version``: the format of the rest
+is then unknown, so it fails early with that single diagnostic (``schema.version``)
+and does not interpret the other fields.
 This module is the authority on schema validity; the packaged JSON Schema file
 is documentation for editors.
 """

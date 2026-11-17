@@ -28,7 +28,7 @@ from omnitient.model import Evidence, WorkPackage
 from omnitient.serialize import dumps
 from omnitient.store import load_package
 from test_closeout_cli import closeout_args, tree, withdraw_args
-from test_delivery import accept, accept_size, deficient, padded
+from test_delivery import accept, accept_size, count_only_deficit, deficient, padded
 
 Run = Callable[..., tuple[int, str, str]]
 
@@ -374,9 +374,28 @@ def test_the_recovery_withdrawal_through_the_command(
     assert before is not None
     assert after is not None
     assert after.byte_deficit < before.byte_deficit
-    if not after.compliant:  # a remaining deficit stays visible
-        assert "delivery.reserve_deficit" in run("show", path)[1]
+    # Fixture precondition: a deficit remains after the recovery, so it must stay visible.
+    assert not after.compliant
+    assert "delivery.reserve_deficit" in run("show", path)[1]
     assert len(path.read_bytes()) <= MAX_PACKAGE_BYTES
+
+
+def test_a_count_only_deficit_refuses_the_withdrawal_command_and_keeps_the_bytes(
+    run: Run, write_package: Callable[..., Path], v2_package: WorkPackage
+) -> None:
+    pkg = count_only_deficit(v2_package)
+    path = write_package(pkg)
+    reserve = delivery.reserve_of(load_package(path).package)
+    assert reserve is not None
+    assert (reserve.acceptances, reserve.withdrawals, reserve.active) == (51, 40, 11)
+    assert (reserve.count_deficit, reserve.byte_deficit) == (2, 0)
+    before = tree(path.parent)
+    code, out, err = run(*withdraw_args(path, target="C40", op="W90"))
+    assert (code, out) == (1, "")
+    assert "delivery.capacity" in err
+    assert tree(path.parent) == before  # bytes, times and mode, no stray file
+    assert run("show", path)[0] == 0  # still inspectable
+    assert "delivery.reserve_deficit" in run("show", path)[1]
 
 
 def test_a_recovery_withdrawal_over_the_hard_limit_is_refused(

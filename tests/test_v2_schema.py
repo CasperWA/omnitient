@@ -179,13 +179,24 @@ def test_v2_accepts_integer_two(v2_package: WorkPackage) -> None:
     assert result.package.schema_version == 2
 
 
-def test_a_v1_reader_refuses_a_v2_file_with_the_existing_code(
+def test_an_unsupported_version_is_refused_with_the_existing_code_and_message(
     v2_package: WorkPackage,
 ) -> None:
-    """The v1 parser used ``schema.version``; this is what an old reader reports."""
+    """What the CURRENT parser reports for version 3.
+
+    This does not show how an older Omnitient reads a v2 file: the earlier parser
+    refused every version but 1 with the same ``schema.version`` code, which is
+    established from its source (commit a666c70) and recorded in the verification
+    map, not by this test.
+    """
     data = to_dict(v2_package)
     data["schema_version"] = 3
-    assert any("this Omnitient reads versions 1 and 2" in p for p in problems(data))
+    result = parse_package(json.dumps(data).encode())
+    assert result.package is None
+    assert [d.code for d in result.diagnostics] == [
+        "schema.version"
+    ]  # and nothing else
+    assert "this Omnitient reads versions 1 and 2" in result.diagnostics[0].message
 
 
 def test_delivery_is_not_allowed_in_v1(package: WorkPackage) -> None:

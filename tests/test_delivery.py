@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import json
+import unicodedata
 from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -15,7 +16,7 @@ from typing import Any
 
 import pytest
 
-from omnitient import delivery, ops, readiness
+from omnitient import delivery, ops, readiness, rules
 from omnitient.context import HostMapping, resolve_context
 from omnitient.delivery import (
     RESERVE_LIMIT_BYTES,
@@ -28,7 +29,7 @@ from omnitient.delivery import (
     withdrawal_request,
 )
 from omnitient.errors import OmnitientError
-from omnitient.model import Acceptance, Decision, Evidence, WorkPackage
+from omnitient.model import Acceptance, Decision, Evidence, Withdrawal, WorkPackage
 from omnitient.schema import parse_package
 from omnitient.serialize import content_digest, dumps
 
@@ -699,6 +700,121 @@ def test_no_admissible_reason_exceeds_the_reserve(
     assert roundtrip(new) == new
 
 
+# --- the timestamp in the reserve (review finding F-002) -------------------------------
+#
+# rules.TIMESTAMP matches any Unicode decimal digit, and strptime accepts some
+# non-ASCII digits (the year, and the second digit of day, hour, minute and
+# second after an ASCII first digit; never a month digit). Four-byte digits
+# (Osmanya here) widen a 20-byte ASCII timestamp to at most 44 bytes. The reserve
+# was once derived with the ASCII form and was 22 bytes short for such a
+# withdrawal of an acceptance with a 32-character id; it now uses the pattern's
+# widest spelling.
+
+ASCII_STAMP = "2026-12-31T23:59:59Z"
+ASCII_BYTES = len(ASCII_STAMP.encode())
+ASCII_DERIVED_RESERVE = 17434  # the value before the correction
+
+
+def osmanya(text: str, *positions: int) -> str:
+    """``text`` with the ASCII digits at ``positions`` written as 4-byte Osmanya digits."""
+    return "".join(
+        chr(0x104A0 + int(c)) if i in positions else c for i, c in enumerate(text)
+    )
+
+
+def widest_admitted_bytes() -> int:
+    """The widest UTF-8 size the complete validation admits, found field by field.
+
+    Each field of the timestamp is tried with every value in every spelling of
+    ASCII or four-byte digits, the others being an ASCII base, and the widest
+    admitted spelling of each field is added up.
+    """
+    base = {"Y": "2026", "m": "12", "d": "19", "H": "09", "M": "59", "S": "59"}
+    seps = {"Y": "-", "m": "-", "d": "T", "H": ":", "M": ":", "S": "Z"}
+    total = len(seps)  # the separators and the Z
+    for field in base:
+        values = range(1, 10000, 97) if field == "Y" else range(100)
+        widest = 0
+        for number in values:
+            digits = f"{number:04d}" if field == "Y" else f"{number:02d}"
+            for mask in range(2 ** len(digits)):
+                wide = [i for i in range(len(digits)) if mask >> i & 1]
+                spelled = osmanya(digits, *wide)
+                parts = {**base, field: spelled}
+                if rules.is_timestamp("".join(parts[k] + seps[k] for k in base)):
+                    widest = max(widest, len(spelled.encode()))
+        total += widest
+    return total
+
+
+# A spelling that reaches that width: year digits, and the second digit of the
+# day, hour, minute and second.
+WIDEST_ADMITTED = osmanya("2026-12-19T09:59:59Z", 0, 1, 2, 3, 9, 12, 15, 18)
+
+
+def test_the_complete_validation_admits_a_wide_timestamp() -> None:
+    assert rules.is_timestamp(WIDEST_ADMITTED)
+    assert len(WIDEST_ADMITTED) == len(ASCII_STAMP) == 20  # the same 20 characters
+    assert len(WIDEST_ADMITTED.encode()) == 44  # but 24 more bytes
+    assert all(unicodedata.category(c) == "Nd" for c in WIDEST_ADMITTED if c.isdigit())
+    assert widest_admitted_bytes() == len(WIDEST_ADMITTED.encode())
+
+
+def test_the_pattern_alone_is_not_the_complete_validation() -> None:
+    """A month digit matches the pattern but strptime refuses it: the two differ."""
+    month = osmanya(ASCII_STAMP, 6)
+    assert rules.TIMESTAMP.fullmatch(month)
+    assert not rules.is_timestamp(month)
+    every_digit = osmanya(ASCII_STAMP, 0, 1, 2, 3, 5, 6, 8, 9, 11, 12, 14, 15, 17, 18)
+    assert rules.TIMESTAMP.fullmatch(every_digit)
+    assert not rules.is_timestamp(every_digit)
+    assert len(every_digit.encode()) == 62  # the pattern's bound, never admitted
+
+
+def test_the_reserve_timestamp_is_the_widest_the_pattern_allows() -> None:
+    worst = delivery.WORST_CASE_TIMESTAMP
+    assert rules.TIMESTAMP.fullmatch(worst)
+    assert len(worst.encode()) == 14 * 4 + 6
+    assert all(unicodedata.category(c) == "Nd" for c in worst if c.isdigit())
+    assert len(worst.encode()) >= widest_admitted_bytes()
+
+
+def maximal_withdrawal(stamp: str, target: str) -> Withdrawal:
+    return Withdrawal(
+        operation_id="W" * 32,
+        actor="\U0001f600" * 200,
+        recorded_at=stamp,
+        reason='"' * 8192,
+        target_acceptance_id=target,
+    )
+
+
+def test_a_withdrawal_with_the_widest_admitted_timestamp_fits_the_reserve(
+    v2_package: WorkPackage,
+) -> None:
+    """The case the ASCII derivation missed, as a constructible, parsed package."""
+    base = accept(v2_package, "A" * 32)  # the longest acceptance id a withdrawal names
+    sizes = {}
+    for name, stamp in (("ascii", ASCII_STAMP), ("wide", WIDEST_ADMITTED)):
+        pkg = replace(
+            base, delivery=(*base.delivery, maximal_withdrawal(stamp, "A" * 32))
+        )
+        assert roundtrip(pkg) == pkg  # the complete parser accepts it
+        sizes[name] = len(dumps(pkg)) - len(dumps(base))
+    assert sizes["wide"] == sizes["ascii"] + (widest_admitted_bytes() - ASCII_BYTES)
+    assert sizes["ascii"] <= ASCII_DERIVED_RESERVE  # the old derivation covered ASCII
+    assert sizes["wide"] > ASCII_DERIVED_RESERVE  # and was short for this one
+    assert sizes["wide"] <= WITHDRAWAL_RESERVE_BYTES  # the correction covers it
+
+
+def test_v1_timestamp_behaviour_is_unchanged(package: WorkPackage) -> None:
+    """Nothing here changes the timestamp rule; v1 accepts what it accepted."""
+    evidence = Evidence("E1", "commit", "abcdef1", "me", WIDEST_ADMITTED)
+    pkg = replace(package, evidence=(evidence,))
+    assert roundtrip(pkg).schema_version == 1
+    assert roundtrip(pkg).evidence[0].recorded_at == WIDEST_ADMITTED
+
+
 def test_the_reserve_counts_every_active_acceptance(v2_package: WorkPackage) -> None:
     one = accept(v2_package, "C1")
     two = accept(replace(one, title="Two"), "C2")
@@ -881,14 +997,12 @@ def test_a_deficit_reducing_withdrawal_is_accepted_and_a_remaining_deficit_is_ke
     assert after is not None
     assert after.byte_deficit < before.byte_deficit
     assert len(dumps(new)) <= RESERVE_LIMIT_BYTES
-    if not after.compliant:
-        assert delivery.reserve_deficit_diagnostic(new) is not None
+    # Fixture precondition: the recovery leaves a deficit, so the checks below run.
+    assert not after.compliant
+    assert delivery.reserve_deficit_diagnostic(new) is not None
     # Ordinary growth gets no bypass, even after the recovery.
-    if not after.compliant:
-        with pytest.raises(OmnitientError):
-            delivery.check_reserve(
-                new, replace(new, title="x" * 10), code="store.reserve"
-            )
+    with pytest.raises(OmnitientError):
+        delivery.check_reserve(new, replace(new, title="x" * 10), code="store.reserve")
 
 
 def test_a_withdrawal_that_exceeds_the_hard_limit_is_refused(
@@ -903,11 +1017,74 @@ def test_a_withdrawal_that_exceeds_the_hard_limit_is_refused(
     }
 
 
-def test_a_count_only_deficit_cannot_be_reduced_by_a_withdrawal() -> None:
-    """2A cannot fall by withdrawing, so no recovery exists for it."""
+def test_a_count_only_deficit_is_not_arithmetic_alone() -> None:
+    """2A cannot fall by withdrawing: the numbers behind the next test."""
     assert delivery.Reserve(51, 0, 51, 1000).count_deficit == 2
     after = delivery.Reserve(51, 1, 50, 1100)
     assert after.count_deficit == 2
+
+
+def count_only_deficit(v2_package: WorkPackage) -> WorkPackage:
+    """A=51 acceptances, W=40 withdrawals, U=11 active: 91 records, 102 reserved.
+
+    Forty acceptances are each withdrawn and ten more are active, all through the
+    real operations; the eleventh active acceptance cannot be added that way (it
+    would exceed 2A <= 100), so it is the one record a hand edit supplies.
+    The package is byte-compliant and short of its reserve by count only.
+    """
+    pkg = v2_package
+    for n in range(40):
+        pkg = withdraw(accept(pkg, f"C{n}"), f"C{n}", f"W{n}", reason="r", actor="a")
+    for n in range(40, 50):
+        pkg = accept(replace(pkg, title=f"Rev {n}"), f"C{n}")
+    hand_edit = replace(
+        pkg.delivery[-1],
+        operation_id="C50",
+        revision=replace(pkg.delivery[-1].revision, digest="e" * 64),
+    )
+    pkg = replace(pkg, delivery=(*pkg.delivery, hand_edit))
+    return roundtrip(pkg)  # a valid file: the parser admits it
+
+
+def test_the_count_only_deficit_fixture_is_what_it_claims(
+    v2_package: WorkPackage,
+) -> None:
+    pkg = count_only_deficit(v2_package)
+    reserve = reserve_of(pkg)
+    assert reserve is not None
+    assert (reserve.acceptances, reserve.withdrawals, reserve.active) == (51, 40, 11)
+    assert len(pkg.delivery) == 91
+    assert reserve.records_reserved == 102
+    assert reserve.count_deficit == 2
+    assert reserve.byte_deficit == 0  # byte-compliant: the deficit is by count only
+    assert not reserve.compliant
+    assert reserve.bytes_stored + reserve.bytes_reserved <= RESERVE_LIMIT_BYTES
+
+
+def test_a_count_only_deficit_refuses_every_withdrawal(v2_package: WorkPackage) -> None:
+    pkg = count_only_deficit(v2_package)
+    for target in ("C40", "C50"):  # an active acceptance of a prior revision, the last
+        with pytest.raises(OmnitientError) as info:
+            withdraw(pkg, target, "W90")
+        assert [d.code for d in info.value.diagnostics] == ["delivery.capacity"]
+    # The library check itself: the withdrawal reduces no byte deficit, because there is none.
+    after = replace(
+        pkg,
+        delivery=(
+            *pkg.delivery,
+            replace(
+                pkg.delivery[1],  # a withdrawal record, retargeted
+                operation_id="W90",
+                target_acceptance_id="C40",
+            ),
+        ),
+    )
+    assert codes(
+        lambda: delivery.check_reserve(pkg, after, recovery=True, code="store.reserve")
+    ) == {"store.reserve"}
+    # Replaying an existing withdrawal needs no capacity at all.
+    same = withdrawal_request(operation_id="W0", actor="a", target="C0", reason="r")
+    assert plan_withdrawal(pkg, same, LATER).outcome == "replayed"
 
 
 def test_other_writers_preserve_the_reserve_from_compliant_input(

@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from importlib import resources
 from pathlib import Path
+from typing import Literal, TextIO
 
 from omnitient import (
     __version__,
@@ -520,33 +521,94 @@ def cmd_context_pin(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
-def _report(lines: Sequence[str], *, saved: bool) -> int:
+Outcome = Literal["saved", "upgraded", "replayed", "none"]
+"""What a command did to the package, for the report of an output failure.
+
+``saved``: an acceptance or withdrawal was persisted and a same-operation-id
+rerun replays it. ``upgraded``: an upgrade was persisted; it has no operation id
+and no replay. ``replayed``: the operation was saved by an earlier run, and this
+run wrote nothing. ``none``: a preview or a no-op; nothing was written.
+"""
+
+
+def _note(text: str) -> bool:
+    """Write an optional line to standard error. Never raises.
+
+    The caller has usually persisted a change already, so a missing or broken
+    standard error must not stop it from reporting that on standard output.
+    Returns whether the line was delivered.
+    """
+    try:
+        stream = sys.stderr
+        if stream is None:  # descriptor 2 was closed before the command started
+            return False
+        written = stream.write(text + "\n")
+        if written != len(text) + 1:  # a text stream counts characters
+            raise OSError("standard error accepted a partial write")
+        stream.flush()
+    except (OSError, ValueError):
+        _abandon_stream(sys.stderr)
+        return False
+    return True
+
+
+_STDOUT_FAILURE: dict[Outcome, str] = {
+    "saved": (
+        "error[delivery.stdout]: standard output failed AFTER the change "
+        "was saved; the package was changed and nothing was rolled back. "
+        "Run the same command again (same operation id) to replay it "
+        "safely and see the record; do not use a new operation id."
+    ),
+    "upgraded": (
+        "error[delivery.stdout]: standard output failed AFTER the change "
+        "was saved; the package was upgraded to manifest v2 and nothing was "
+        "rolled back. No receipt was printed. An upgrade has no operation id "
+        "and no replay: running the same --apply command again is refused "
+        "by design, because its expected file hash is the old one. Inspect "
+        "the package with 'omnitient show PACKAGE', or run "
+        "'omnitient upgrade PACKAGE --to-version 2' (no --apply) to see that "
+        "no upgrade is needed and the current file hash."
+    ),
+    "replayed": (
+        "error[delivery.stdout]: standard output failed; nothing was written "
+        "to the package by this run (the record was saved by an earlier run). "
+        "Run the same command again to see it."
+    ),
+    "none": (
+        "error[delivery.stdout]: standard output failed; nothing was "
+        "written to the package"
+    ),
+}
+
+
+def _report(lines: Sequence[str], *, outcome: Outcome) -> int:
     """Write the outcome to standard output, and say so if that fails.
 
+    Only a complete write counts as delivery: ``sys.stdout`` is a text stream,
+    whose ``write`` returns the number of characters accepted, so anything but
+    the document's length (a short count, zero, ``None``) is a failure, as is an
+    exception from ``write`` or ``flush``. Nothing is retried, because part of
+    the document may already have reached the reader.
     The change (if any) is already persisted when this runs, so a failure here
     must never claim that nothing changed, and nothing is rolled back or
-    repeated: running the same command again replays it safely.
+    repeated. Which advice is true depends on the operation (see ``Outcome``).
+    The failure message is best-effort: if standard error is unusable too, the
+    exit status is all that is left.
     """
+    text = "\n".join(lines) + "\n"
     try:
         stream = sys.stdout
         if stream is None:  # the descriptor was closed before the command started
             raise OSError("standard output is closed")
-        stream.write("\n".join(lines) + "\n")
+        written = stream.write(text)
+        if written != len(text):
+            raise OSError(
+                f"standard output accepted {written!r} of {len(text)} characters"
+            )
         stream.flush()
     except (OSError, ValueError):
         _abandon_stdout()
-        if saved:
-            _err(
-                "error[delivery.stdout]: standard output failed AFTER the change "
-                "was saved; the package was changed and nothing was rolled back. "
-                "Run the same command again (same operation id) to replay it "
-                "safely and see the record; do not use a new operation id."
-            )
-        else:
-            _err(
-                "error[delivery.stdout]: standard output failed; nothing was "
-                "written to the package"
-            )
+        _note(_STDOUT_FAILURE[outcome])
         return EXIT_REFUSED
     return EXIT_OK
 
@@ -588,12 +650,12 @@ def _delivery_lines(planned: delivery.Planned, pkg: WorkPackage) -> list[str]:
 
 
 def _delivery_notes(saved: bool) -> None:
-    _err(
+    _note(
         "note: delivery records are workflow provenance, not authentication, "
         "verification of any artifact or permission to run anything"
     )
     if saved:
-        _err(
+        _note(
             "note: stage, approvals, context pins and readiness were not "
             "evaluated or changed"
         )
@@ -612,9 +674,7 @@ def cmd_closeout(args: argparse.Namespace) -> int:
     if planned.outcome == "saved":
         update_package(loaded, lambda _pkg: planned.package)
     _delivery_notes(planned.outcome == "saved")
-    return _report(
-        _delivery_lines(planned, planned.package), saved=planned.outcome == "saved"
-    )
+    return _report(_delivery_lines(planned, planned.package), outcome=planned.outcome)
 
 
 def cmd_withdraw(args: argparse.Namespace) -> int:
@@ -629,9 +689,7 @@ def cmd_withdraw(args: argparse.Namespace) -> int:
     if planned.outcome == "saved":
         update_package(loaded, lambda _pkg: planned.package, reserve_recovery=True)
     _delivery_notes(planned.outcome == "saved")
-    return _report(
-        _delivery_lines(planned, planned.package), saved=planned.outcome == "saved"
-    )
+    return _report(_delivery_lines(planned, planned.package), outcome=planned.outcome)
 
 
 def _upgrade_refusal(code: str, message: str) -> OmnitientError:
@@ -673,7 +731,7 @@ def cmd_upgrade(args: argparse.Namespace) -> int:
                     ),
                     f"file sha256: {loaded.file_sha256}",
                 ],
-                saved=False,
+                outcome="none",
             )
         if expected == loaded.file_sha256:
             return _report(
@@ -684,7 +742,7 @@ def cmd_upgrade(args: argparse.Namespace) -> int:
                     ),
                     f"file sha256: {loaded.file_sha256}",
                 ],
-                saved=False,
+                outcome="none",
             )
         raise _upgrade_refusal(
             "upgrade.hash_mismatch",
@@ -720,7 +778,7 @@ def cmd_upgrade(args: argparse.Namespace) -> int:
             "in Git history first, then run the same command with --apply "
             f"--expected-file-sha256 {loaded.file_sha256}"
         )
-        return _report(lines, saved=False)
+        return _report(lines, outcome="none")
     if expected != loaded.file_sha256:
         raise _upgrade_refusal(
             "upgrade.hash_mismatch",
@@ -729,24 +787,28 @@ def cmd_upgrade(args: argparse.Namespace) -> int:
             "Inspect the package and preview again.",
         )
     update_package(loaded, ops.upgrade_to_v2)
-    _err("note: the upgrade made no approval, no repin and no stage change")
+    _note("note: the upgrade made no approval, no repin and no stage change")
     lines[0] = f"saved upgrade: {pkg.package_id}"
-    return _report(lines, saved=True)
+    return _report(lines, outcome="upgraded")
 
 
-def _abandon_stdout() -> None:
-    """Point a broken stdout at the null device so the interpreter's own flush at exit
-    stays quiet; the command has already failed."""
+def _abandon_stream(stream: TextIO | None) -> None:
+    """Point a broken standard stream at the null device so the interpreter's own
+    flush at exit stays quiet; the command has already failed."""
     try:
-        if sys.stdout is None:
+        if stream is None:
             return
         fd = os.open(os.devnull, os.O_WRONLY)
         try:
-            os.dup2(fd, sys.stdout.fileno())
+            os.dup2(fd, stream.fileno())
         finally:
             os.close(fd)
     except (OSError, ValueError):
-        pass  # no real descriptor behind stdout (for example a captured stream)
+        pass  # no real descriptor behind the stream (for example a captured stream)
+
+
+def _abandon_stdout() -> None:
+    _abandon_stream(sys.stdout)
 
 
 def cmd_overview(args: argparse.Namespace) -> int:

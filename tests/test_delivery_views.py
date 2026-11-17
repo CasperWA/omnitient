@@ -470,10 +470,26 @@ def test_the_bundle_format_is_unchanged_and_verifies_for_a_v2_package(
         1,
     )
     assert check_bundle(out, "handoff-planning.meta.json") == []
-    # A later acceptance never rewrites a handoff that was already generated.
+    # A later mutation never rewrites a handoff that was already generated. The
+    # present revision already has an active acceptance (C3), so a second closeout
+    # would be refused; withdraw it first, then accept again, and check that both
+    # genuinely succeed and change the package before comparing the bundle.
     before = {p.name: p.read_bytes() for p in out.iterdir()}
-    run(
+    package_before = path.read_bytes()
+    assert load_package(path).package.delivery[-1].operation_id == "C3"
+    code, _, err = run(
+        "withdraw", path, "--closeout-id", "C3", "--by", "x", "--reason", "redo",
+        "--operation-id", "W9",
+    )  # fmt: skip
+    assert code == 0, err
+    code, receipt, err = run(
         "closeout", path, "--by", "x", "--revision", content_digest(load_package(path).package),
         "--evidence", "E1", "--reason", "again", "--operation-id", "C9",
     )  # fmt: skip
+    assert code == 0, err
+    assert receipt.startswith("saved acceptance C9")
+    saved = load_package(path).package
+    assert [d.operation_id for d in saved.delivery][-2:] == ["W9", "C9"]
+    assert path.read_bytes() != package_before
     assert {p.name: p.read_bytes() for p in out.iterdir()} == before
+    assert check_bundle(out, "handoff-planning.meta.json") == []

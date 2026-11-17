@@ -812,3 +812,355 @@ def test_schema_selection(run: Run) -> None:
     with pytest.raises(SystemExit) as info:
         main(["schema", "--schema-version", "3"])
     assert info.value.code == 2
+
+
+# --- delivering the report: write counts, operation-aware guidance, best-effort notes (AC16) --------
+
+
+class Stream:
+    """A text stream whose write result and failures the test chooses."""
+
+    def __init__(
+        self,
+        result: Callable[[str], Any] = len,
+        *,
+        fail_write: bool = False,
+        fail_flush: bool = False,
+    ) -> None:
+        self.result = result
+        self.fail_write = fail_write
+        self.fail_flush = fail_flush
+        self.attempts = 0
+        self.text = ""
+
+    def write(self, text: str) -> Any:
+        self.attempts += 1
+        if self.fail_write:
+            raise BrokenPipeError("closed")
+        self.text += text
+        return self.result(text)
+
+    def flush(self) -> None:
+        if self.fail_flush:
+            raise BrokenPipeError("closed")
+
+    def fileno(self) -> int:
+        raise OSError("no descriptor")
+
+
+WRITE_RESULTS: dict[str, Callable[[str], Any]] = {
+    "short": lambda t: len(t) - 1,
+    "zero": lambda _t: 0,
+    "none": lambda _t: None,
+    "more than offered": lambda t: len(t) + 1,
+    "bytes counted for a text stream": lambda t: len(t.encode("utf-8")),
+}
+
+MULTIBYTE_ACTOR = "Åsa ☃ \U0001f600"
+
+
+def delivery_args(path: Path, **kw: str) -> list[object]:
+    return closeout_args(path, by=MULTIBYTE_ACTOR, **kw)
+
+
+@pytest.mark.parametrize("name", sorted(WRITE_RESULTS))
+def test_an_incomplete_write_count_is_a_saved_change_output_failure_without_a_retry(
+    v2_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    run: Run,
+    name: str,
+) -> None:
+    args = delivery_args(v2_file)
+    stream = Stream(WRITE_RESULTS[name])
+    monkeypatch.setattr(sys, "stdout", stream)
+    code = main([str(a) for a in args])
+    err = capsys.readouterr().err
+    monkeypatch.undo()
+    # The count is only meaningful if the text really has more bytes than characters.
+    assert len(stream.text.encode()) > len(stream.text)
+    assert code == 1
+    assert "AFTER the change was saved" in err
+    assert "nothing was rolled back" in err
+    assert stream.attempts == 1  # no automatic retry, nothing appended again
+    assert [d.operation_id for d in load_package(v2_file).package.delivery] == ["C1"]
+    code, out, _ = run(*args)  # the documented recovery: replay, not a new record
+    assert (code, out.startswith("replayed acceptance C1")) == (0, True)
+    assert len(load_package(v2_file).package.delivery) == 1
+
+
+def test_a_text_stream_is_complete_when_it_counts_every_character(
+    v2_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Multibyte text: characters are the unit of a text stream, not bytes."""
+    stream = Stream(len)
+    monkeypatch.setattr(sys, "stdout", stream)
+    code = main([str(a) for a in delivery_args(v2_file)])
+    monkeypatch.undo()
+    assert code == 0
+    assert MULTIBYTE_ACTOR in stream.text
+    assert len(stream.text.encode()) > len(stream.text)
+    assert stream.attempts == 1
+    assert len(load_package(v2_file).package.delivery) == 1
+
+
+def test_a_flush_failure_after_a_complete_write_is_still_an_output_failure(
+    v2_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(sys, "stdout", Stream(fail_flush=True))
+    code = main([str(a) for a in closeout_args(v2_file)])
+    err = capsys.readouterr().err
+    monkeypatch.undo()
+    assert code == 1
+    assert "AFTER the change was saved" in err
+    assert len(load_package(v2_file).package.delivery) == 1
+
+
+def test_a_short_write_on_a_replay_says_the_record_was_saved_earlier(
+    run: Run,
+    v2_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert run(*closeout_args(v2_file))[0] == 0
+    before = tree(v2_file.parent)
+    monkeypatch.setattr(sys, "stdout", Stream(lambda _t: 0))
+    code = main([str(a) for a in closeout_args(v2_file)])
+    err = capsys.readouterr().err
+    monkeypatch.undo()
+    assert code == 1
+    assert "nothing was written to the package by this run" in err
+    assert "saved by an earlier run" in err
+    assert "AFTER" not in err
+    assert tree(v2_file.parent) == before
+
+
+def apply_args(path: Path, expected: str | None = None) -> list[object]:
+    return [
+        "upgrade",
+        path,
+        "--to-version",
+        "2",
+        "--apply",
+        "--expected-file-sha256",
+        expected or file_hash(path),
+    ]
+
+
+@pytest.mark.parametrize(
+    "stdout",
+    [BrokenStdout, lambda: Stream(lambda _t: 0), lambda: None],
+    ids=["raises", "short count", "closed"],
+)
+def test_an_output_failure_after_a_saved_upgrade_gives_upgrade_guidance(
+    run: Run,
+    v1_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    stdout: Callable[[], Any],
+) -> None:
+    args = apply_args(v1_file)
+    old_hash = file_hash(v1_file)
+    monkeypatch.setattr(sys, "stdout", stdout())
+    code = main([str(a) for a in args])
+    err = capsys.readouterr().err
+    monkeypatch.undo()
+    assert code == 1
+    assert "AFTER the change was saved" in err
+    assert "upgraded to manifest v2" in err
+    assert "nothing was rolled back" in err
+    assert "omnitient show" in err
+    # No promise of a replay that does not exist, and no operation id or receipt.
+    assert "same operation id" not in err
+    assert "replay it safely" not in err
+    assert "no operation id" in err
+    assert "refused by design" in err
+    saved = load_package(v1_file).package
+    assert saved.schema_version == 2
+    assert saved == ops.upgrade_to_v2(saved_back_to_v1(saved))
+    # What the guidance says is what happens: the same command is refused, and the
+    # preview reports that nothing is left to do.
+    after = tree(v1_file.parent)
+    code, out, err = run(*apply_args(v1_file, old_hash))
+    assert (code, out) == (1, "")
+    assert "upgrade.hash_mismatch" in err
+    assert tree(v1_file.parent) == after
+    code, out, _ = run("upgrade", v1_file, "--to-version", "2")
+    assert (code, out.startswith("no upgrade needed")) == (0, True)
+
+
+def saved_back_to_v1(pkg: WorkPackage) -> WorkPackage:
+    return replace(pkg, schema_version=1)
+
+
+def test_a_preview_or_a_no_op_with_failing_output_says_nothing_was_written(
+    run: Run,
+    v1_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    def failing(args: list[object]) -> str:
+        before = tree(v1_file.parent)
+        monkeypatch.setattr(sys, "stdout", Stream(lambda _t: 0))
+        code = main([str(a) for a in args])
+        err = capsys.readouterr().err
+        monkeypatch.undo()
+        assert code == 1
+        assert tree(v1_file.parent) == before  # no mutation of any kind
+        return err
+
+    preview = failing(["upgrade", v1_file, "--to-version", "2"])
+    assert run(*apply_args(v1_file))[0] == 0  # now a v2 package
+    no_op_preview = failing(["upgrade", v1_file, "--to-version", "2"])
+    unchanged = failing(apply_args(v1_file))
+    for err in (preview, no_op_preview, unchanged):
+        assert "nothing was written to the package" in err
+        assert "AFTER" not in err
+        assert "operation id" not in err
+        assert "rolled back" not in err
+
+
+class BrokenStderr:
+    def __init__(self) -> None:
+        self.attempts = 0
+
+    def write(self, _text: str) -> int:
+        self.attempts += 1
+        raise BrokenPipeError("closed")
+
+    def flush(self) -> None:
+        raise BrokenPipeError("closed")
+
+    def fileno(self) -> int:
+        raise OSError("no descriptor")
+
+
+STDERRS: dict[str, Callable[[], Any]] = {
+    "raises": BrokenStderr,
+    "closed": lambda: None,
+    "short count": lambda: Stream(lambda _t: 0),
+}
+
+
+def stderr_command(
+    run: Run, command: str, v2_file: Path, v1_file: Path
+) -> tuple[Path, list[object]]:
+    """The file a command changes and its arguments, with any prerequisite done."""
+    if command == "closeout":
+        return v2_file, closeout_args(v2_file)
+    if command == "withdraw":
+        assert run(*closeout_args(v2_file, op="C0"))[0] == 0  # something to withdraw
+        return v2_file, withdraw_args(v2_file, target="C0", op="W1")
+    return v1_file, apply_args(v1_file)
+
+
+@pytest.mark.parametrize("stderr", sorted(STDERRS))
+@pytest.mark.parametrize("command", ["closeout", "withdraw", "upgrade"])
+def test_optional_notes_on_a_broken_stderr_cannot_prevent_the_receipt(
+    run: Run,
+    v2_file: Path,
+    v1_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    command: str,
+    stderr: str,
+) -> None:
+    target, args = stderr_command(run, command, v2_file, v1_file)
+    before = target.read_bytes()
+    monkeypatch.setattr(sys, "stderr", STDERRS[stderr]())
+    code = main([str(a) for a in args])
+    out = capsys.readouterr().out
+    monkeypatch.undo()
+    assert code == 0
+    first_words = {"closeout": "saved acceptance", "withdraw": "saved withdrawal"}
+    assert out.startswith(first_words.get(command, "saved upgrade"))
+    saved = load_package(target).package
+    assert target.read_bytes() != before  # saved, and only once
+    if command == "upgrade":
+        assert saved.schema_version == 2
+    else:
+        assert len(saved.delivery) == (1 if command == "closeout" else 2)
+
+
+def test_a_working_stderr_still_gets_its_notes_and_a_failing_stdout_its_message(
+    v2_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(sys, "stdout", BrokenStdout())
+    code = main([str(a) for a in closeout_args(v2_file)])
+    err = capsys.readouterr().err
+    monkeypatch.undo()
+    assert code == 1
+    assert "note: delivery records are workflow provenance" in err
+    assert "AFTER the change was saved" in err
+
+
+@pytest.mark.parametrize(
+    "streams",
+    [
+        (BrokenStdout, BrokenStderr),
+        (lambda: None, lambda: None),
+        (lambda: Stream(lambda _t: 0), BrokenStderr),
+    ],
+    ids=["both raise", "both closed", "short stdout, raising stderr"],
+)
+def test_with_both_streams_unusable_the_saved_state_stays_and_nothing_is_claimed(
+    v2_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    streams: tuple[Callable[[], Any], Callable[[], Any]],
+) -> None:
+    out_stream, err_stream = streams[0](), streams[1]()
+    monkeypatch.setattr(sys, "stdout", out_stream)
+    monkeypatch.setattr(sys, "stderr", err_stream)
+    code = main([str(a) for a in closeout_args(v2_file)])  # must not raise
+    monkeypatch.undo()
+    captured = capsys.readouterr()
+    assert code == 1  # the receipt was not delivered, and nothing says it was
+    assert (captured.out, captured.err) == ("", "")
+    if isinstance(out_stream, Stream):
+        assert out_stream.attempts == 1  # tried once, never retried
+    assert [d.operation_id for d in load_package(v2_file).package.delivery] == ["C1"]
+
+
+def run_with_closed(
+    descriptors: str, command: list[object]
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [
+            "/bin/sh",
+            "-c",
+            f'exec {descriptors}; exec "$@"',
+            "sh",
+            sys.executable,
+            "-m",
+            "omnitient",
+            *map(str, command),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+
+
+def test_a_really_closed_standard_error_does_not_prevent_the_receipt(
+    v2_file: Path,
+) -> None:
+    done = run_with_closed("2>&-", closeout_args(v2_file, op="C7"))
+    assert done.returncode == 0
+    assert done.stdout.startswith("saved acceptance C7")
+    assert "Traceback" not in done.stdout + done.stderr
+    assert [d.operation_id for d in load_package(v2_file).package.delivery] == ["C7"]
+
+
+def test_really_closed_standard_output_and_error_are_a_clean_failure(
+    v2_file: Path,
+) -> None:
+    done = run_with_closed("1>&- 2>&-", closeout_args(v2_file, op="C8"))
+    assert done.returncode == 1
+    assert (done.stdout, done.stderr) == ("", "")
+    assert [d.operation_id for d in load_package(v2_file).package.delivery] == ["C8"]
