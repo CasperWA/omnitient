@@ -26,5 +26,9 @@ htmlcov/
 *.local.json
 .claude/settings.local.json
 
+# The project skills under .claude/ are part of the repository, although a
+# global ignore rule may hide the directory
+!.claude/
+
 # Derived handoff metadata records host paths and generation time
 *.meta.json

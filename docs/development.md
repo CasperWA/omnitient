@@ -118,8 +118,10 @@ That is specific to this example: a handoff generated from other packages embeds
 | `src/omnitient/overview.py` | Assessment of a collection with the O1 engine (O2). |
 | `src/omnitient/overview_render.py` | JSON and text serialisation of an overview, with no I/O (O2). |
 | `src/omnitient/delivery.py` | Delivery records (O3): requests, replay and conflict, status and summaries, the withdrawal reserve, with no I/O. |
+| `src/omnitient/start.py` | Wording of the start preview and the change check, with no I/O. |
 | `src/omnitient/cli.py` | All terminal and file I/O. |
 | `src/omnitient/data/` | Packaged JSON Schemas: v1 (`work-package.schema.json`) and v2 (`work-package.v2.schema.json`). |
+| `.claude/skills/omnitient-start/` | The project skill that wraps `omnitient start` ([start-contract.md](start-contract.md)). |
 | `tests/` | One test module per area. |
 | `examples/` | A worked work package and its handoff. |
 

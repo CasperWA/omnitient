@@ -25,6 +25,8 @@ from omnitient import (
     overview_render,
     readiness,
     render,
+    rules,
+    start,
 )
 from omnitient.context import (
     HostMapping,
@@ -66,6 +68,7 @@ from omnitient.store import (
 
 EXIT_OK = 0
 EXIT_REFUSED = 1
+EXIT_USAGE = 2
 EXIT_NOT_READY = 3
 
 
@@ -403,6 +406,99 @@ def cmd_render(args: argparse.Namespace) -> int:
         for diag in report.blockers:
             _err(diag.format())
         return EXIT_NOT_READY
+    return EXIT_OK
+
+
+def _resolve_checkout(arg: Path | None) -> start.Checkout:
+    """The actual target directory: ``--checkout``, else the working directory."""
+    try:
+        path = (arg if arg is not None else Path.cwd()).resolve(strict=True)
+    except (OSError, RuntimeError) as exc:
+        raise refusal(
+            "start.checkout", f"cannot resolve the target checkout: {exc}"
+        ) from exc
+    if not path.is_dir():
+        raise refusal("start.checkout", "the target checkout is not a directory")
+    forbidden = rules.forbidden_directory(path.parts)
+    if forbidden:
+        raise refusal(
+            "start.checkout",
+            f"the target checkout lies inside a directory named {forbidden!r}, "
+            "which is never a work location",
+        )
+    return start.Checkout(path, os.path.lexists(path / ".git"))
+
+
+def _usage(message: str) -> int:
+    _err(f"omnitient start: error: {message}")
+    return EXIT_USAGE
+
+
+def cmd_start(args: argparse.Namespace) -> int:
+    expectations = (args.expect_revision, args.expect_file_sha256, args.expect_checkout)
+    given = [e is not None for e in expectations]
+    if (args.handoff and not all(given)) or (not args.handoff and any(given)):
+        return _usage(
+            "--handoff needs --expect-revision, --expect-file-sha256 and "
+            "--expect-checkout, and they are accepted only with --handoff"
+        )
+    for name, value in (
+        ("--expect-revision", args.expect_revision),
+        ("--expect-file-sha256", args.expect_file_sha256),
+    ):
+        if value is not None and not SHA256.fullmatch(value):
+            return _usage(f"{name} must be 64 lowercase hexadecimal characters")
+
+    assessed = _assess(args)
+    loaded, stage = assessed.loaded, start.START_STAGE
+    checkout = _resolve_checkout(args.checkout)
+    digest = content_digest(loaded.package)
+    if args.handoff:
+        changed = start.changes_since_preview(
+            start.Shown(
+                args.expect_revision,
+                args.expect_file_sha256,
+                Path(args.expect_checkout).resolve(),
+            ),
+            revision=digest,
+            file_sha256=loaded.file_sha256,
+            checkout=checkout.path,
+        )
+        if changed:
+            raise OmnitientError(
+                Diagnostic(
+                    "start.changed",
+                    "error",
+                    "changed since the preview, so nothing was started: "
+                    + "; ".join(changed)
+                    + ". Show the owner a new preview.",
+                )
+            )
+
+    handoff = render.build_handoff(loaded.package, assessed.resolved, stage)
+    for line in start.preview_lines(
+        loaded.package,
+        digest,
+        handoff.readiness,
+        package_file=loaded.path.resolve(),
+        file_sha256=loaded.file_sha256,
+        checkout=checkout,
+        roots=assessed.mapping.roots,
+    ):
+        _out(line)
+    if not handoff.readiness.ready:
+        return EXIT_NOT_READY
+    if not args.handoff:
+        _out("no handoff was produced; it needs the owner's go-ahead for this scope")
+        return EXIT_OK
+    document = render.render_format(handoff, "md")
+    sys.stdout.flush()
+    sys.stdout.buffer.write(
+        f"{start.HANDOFF_BEGIN}\n".encode()
+        + document
+        + f"{start.HANDOFF_END}\n".encode()
+    )
+    sys.stdout.flush()
     return EXIT_OK
 
 
@@ -925,6 +1021,30 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--force", action="store_true", help="replace existing output files")
     p.set_defaults(func=cmd_render)
+
+    p = sub.add_parser(
+        "start",
+        parents=[host],
+        help="preview the start of implementation, then emit its handoff",
+    )
+    _add_package_argument(p)
+    p.add_argument(
+        "--checkout",
+        type=Path,
+        metavar="DIR",
+        help="target checkout (default: the current directory)",
+    )
+    p.add_argument(
+        "--handoff",
+        action="store_true",
+        help="after the owner approved the preview, emit the READY handoff",
+    )
+    p.add_argument("--expect-revision", metavar="DIGEST", help="revision previewed")
+    p.add_argument(
+        "--expect-file-sha256", metavar="HASH", help="package file hash previewed"
+    )
+    p.add_argument("--expect-checkout", metavar="DIR", help="target previewed")
+    p.set_defaults(func=cmd_start)
 
     p = sub.add_parser(
         "approve", parents=[host], help="record approval of the present revision"

@@ -21,6 +21,7 @@ It does not read or write the state of any autonomous-development engine.
 
 Pre-release, slices O1 and O2.
 The behaviour is specified in [docs/o1-contract.md](docs/o1-contract.md) and, for `omnitient overview`, [docs/o2-overview-contract.md](docs/o2-overview-contract.md).
+Starting implementation from a Claude Code session in the project is specified in [docs/start-contract.md](docs/start-contract.md).
 
 Supported Python: 3.12 or newer (`requires-python = ">=3.12"`).
 Tested: CPython 3.12, 3.13, 3.14 and 3.15 in CI, standard GIL builds from `actions/setup-python` (for example 3.12.15, 3.13.16, 3.14.8 and 3.15.0), on Linux only; 3.12.15 is the development baseline.
@@ -129,6 +130,16 @@ omnitient overview work --root repo=$HOME/src/my-repo
 omnitient overview work --root repo=$HOME/src/my-repo --json
 ```
 
+Start implementing one package from a Claude Code session opened in the project.
+The project skill `/omnitient-start PACKAGE [--root NAME=DIR]... [--checkout DIR]` runs `omnitient start`, which previews the package, revision, target checkout and proposed write scope and waits for you before anything is edited.
+The command only reads; after you agree, it emits the same READY handoff as `render`, and refuses to if the package, its revision or the checkout changed since the preview.
+A blocked package gets a refusal and no handoff.
+See [docs/start-contract.md](docs/start-contract.md).
+
+```bash
+omnitient start work/my-package --root repo=$HOME/src/my-repo --checkout $HOME/src/my-repo
+```
+
 ### Commands
 
 | Command | Purpose |
@@ -140,6 +151,7 @@ omnitient overview work --root repo=$HOME/src/my-repo --json
 | `approve` | Record approval of the present revision for a stage. |
 | `evidence add` | Append a report, PR or commit reference. |
 | `context add` / `context pin` | Add a context file, or accept its changed digest. |
+| `start` | Read-only preview of starting implementation (package, revision, target checkout, write scope), and with `--handoff` the checked READY handoff. |
 | `overview` | Read-only summary of the packages in one explicit directory: declared stage, readiness per handoff stage, advisory next steps. |
 | `closeout` | Record the acceptance of the present revision of a manifest v2 package, with a snapshot of the chosen evidence. |
 | `withdraw` | Withdraw an earlier acceptance by its id. |
@@ -172,6 +184,7 @@ The report is built completely before it is written, but a delivery failure can 
 
 - [docs/o1-contract.md](docs/o1-contract.md): the O1 contract, schema, readiness rules and acceptance plan.
 - [docs/o2-overview-contract.md](docs/o2-overview-contract.md): the O2 contract for `omnitient overview`: discovery rules, output schema, completeness and limits.
+- [docs/start-contract.md](docs/start-contract.md): `omnitient start` and the `/omnitient-start` project skill.
 - [docs/development.md](docs/development.md): environment, checks, tests and conventions.
 - [docs/ci.md](docs/ci.md): the CI workflow, runner selection and the steps for making the repository public.
 - [docs/github-handoff.md](docs/github-handoff.md): the state of the GitHub repository, its templates and labels, and the independent review handoff.
