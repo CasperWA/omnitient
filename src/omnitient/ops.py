@@ -19,6 +19,8 @@ from omnitient import readiness
 from omnitient.context import ResolvedContext
 from omnitient.errors import Diagnostic, OmnitientError, refusal
 from omnitient.model import (
+    LATEST_SCHEMA_VERSION,
+    SCHEMA_VERSION_2,
     Approval,
     ContextRef,
     EngineRef,
@@ -49,7 +51,8 @@ def next_id(prefix: str, existing: Collection[str]) -> str:
 def new_package(
     project: str, initiative: str, work_package: str, title: str
 ) -> WorkPackage:
-    """A draft, unapproved scaffold. Never contains approvals."""
+    """A draft, unapproved scaffold in the latest manifest format (empty delivery
+    history). Never contains approvals."""
     return WorkPackage(
         project=project,
         initiative=initiative,
@@ -57,6 +60,7 @@ def new_package(
         title=title,
         stage="draft",
         objective=PLACEHOLDER_OBJECTIVE,
+        schema_version=LATEST_SCHEMA_VERSION,
     )
 
 
@@ -122,9 +126,14 @@ def add_evidence(
 
 
 def assert_history_preserved(old: WorkPackage, new: WorkPackage) -> None:
-    """Guard: ``new`` only appends evidence/approvals; approved content is unchanged."""
+    """Guard: ``new`` only appends evidence, approvals and delivery records.
+
+    The approved content, the manifest format and every earlier record are unchanged.
+    """
     ok = (
-        content_digest(old) == content_digest(new)
+        old.schema_version == new.schema_version
+        and content_digest(old) == content_digest(new)
+        and new.delivery[: len(old.delivery)] == old.delivery
         and new.evidence[: len(old.evidence)] == old.evidence
         and new.approvals[: len(old.approvals)] == old.approvals
         and new.recommendations == old.recommendations
@@ -162,3 +171,24 @@ def pin_context(pkg: WorkPackage, digests: Mapping[str, str]) -> WorkPackage:
             for c in pkg.context
         ),
     )
+
+
+def upgrade_to_v2(pkg: WorkPackage) -> WorkPackage:
+    """The same package in manifest format 2, with an empty delivery history.
+
+    Only the format changes, so the revision changes with it and earlier
+    approvals become stale; they stay in the file unchanged.
+    """
+    if pkg.schema_version >= SCHEMA_VERSION_2:
+        raise refusal("upgrade.not_needed", "the package is already manifest v2")
+    if pkg.delivery:
+        raise refusal("upgrade.invalid", "a v1 package cannot hold delivery records")
+    new = replace(pkg, schema_version=SCHEMA_VERSION_2, delivery=())
+    ok = (
+        replace(new, schema_version=pkg.schema_version) == pkg
+        and new.approvals == pkg.approvals
+        and new.evidence == pkg.evidence
+    )
+    if not ok:  # pragma: no cover - guards a future edit of this function
+        raise refusal("store.history", "an upgrade may only change the format")
+    return new

@@ -17,6 +17,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any, Literal
 
+from omnitient import delivery as delivery_mod
 from omnitient import readiness as readiness_mod
 from omnitient.context import ResolvedContext
 from omnitient.errors import Diagnostic, refusal
@@ -33,7 +34,7 @@ from omnitient.serialize import (
 )
 
 HANDOFF_SCHEMA_ID = "omnitient/handoff"
-HANDOFF_SCHEMA_VERSION = 1
+HANDOFF_SCHEMA_VERSION = 2
 
 SECTION_TITLES: tuple[str, ...] = (
     "Handoff status",
@@ -45,6 +46,7 @@ SECTION_TITLES: tuple[str, ...] = (
     "Execution recommendations",
     "Evidence",
     "Approvals",
+    "Delivery",
     "Context",
     "Provenance",
 )
@@ -67,6 +69,14 @@ RECOMMENDATION_STATEMENT = (
 APPROVAL_STATEMENT = (
     "Approval records are workflow provenance (who recorded approval of which "
     "revision, and when). They are not authentication."
+)
+
+DELIVERY_STATEMENT = (
+    "Delivery records are workflow provenance: who recorded the acceptance or "
+    "withdrawal of which revision, and when. They are not authentication, they do "
+    "not verify any artifact, they are independent of readiness and approvals, and "
+    "they grant no permission to execute anything. A declared stage of done is not "
+    "an acceptance."
 )
 
 EVIDENCE_STATEMENT = (
@@ -210,6 +220,43 @@ def _context_lines(item: ResolvedContext) -> list[str]:
         "",
         *_fenced(item.text),
     ]
+    return lines
+
+
+def _delivery_lines(pkg: WorkPackage) -> list[str]:
+    summary = delivery_mod.summarize(pkg)
+    current = summary.current_revision_acceptance
+    lines = [
+        f"- State: {_code(summary.state)}",
+        f"- Current-revision acceptance: {_code(current) if current else '_none_'}",
+        (
+            f"- Acceptances: {summary.acceptance_count}; withdrawals: "
+            f"{summary.withdrawal_count}; withdrawn acceptances: "
+            f"{summary.withdrawn_acceptance_count}; unwithdrawn at a prior revision: "
+            f"{summary.prior_revision_unwithdrawn_count}"
+        ),
+    ]
+    if summary.state == "unavailable":
+        lines.append("- Manifest schema version 1 cannot hold delivery records.")
+    for record in delivery_mod.compact_records(pkg):
+        if record["kind"] == "acceptance":
+            linked = (
+                f"; withdrawn by {_code(record['withdrawn_by'])}"
+                if record["withdrawn_by"]
+                else ""
+            )
+            lines.append(
+                f"- {_code(record['operation_id'])} acceptance of revision "
+                f"{_code(record['revision'][:12])}: {record['state']}{linked}"
+            )
+        else:
+            lines.append(
+                f"- {_code(record['operation_id'])} withdrawal of "
+                f"{_code(record['target_acceptance_id'])}"
+            )
+    deficit = delivery_mod.reserve_deficit_diagnostic(pkg)
+    if deficit:
+        lines.append(_diag_line(deficit))
     return lines
 
 
@@ -370,16 +417,25 @@ def render_markdown(handoff: Handoff) -> str:
     out.append("")
 
     section(10)
+    out += [DELIVERY_STATEMENT, ""]
+    out += _delivery_lines(pkg)
+    out.append("")
+
+    section(11)
     if not handoff.context:
         out += ["- _none_", ""]
     for item in handoff.context:
         out += _context_lines(item)
 
-    section(11)
+    section(12)
     out += [
         f"- Package: {_code(pkg.package_id)}",
         f"- Revision: {_code(handoff.digest)}",
-        f"- Package schema: {_code('omnitient/work-package')} version 1",
+        f"- Digest scheme: {_code(pkg.digest_scheme)}",
+        (
+            f"- Package schema: {_code('omnitient/work-package')} "
+            f"version {pkg.schema_version}"
+        ),
         f"- Handoff schema: {_code(HANDOFF_SCHEMA_ID)} version {HANDOFF_SCHEMA_VERSION}",
         (
             "- This document contains no generation time and no host paths; "
@@ -410,6 +466,8 @@ def handoff_dict(handoff: Handoff) -> dict[str, Any]:
             "work_package": pkg.work_package,
             "title": pkg.title,
             "stage": pkg.stage,
+            "manifest_schema_version": pkg.schema_version,
+            "digest_scheme": pkg.digest_scheme,
             "content_digest": handoff.digest,
             "objective": pkg.objective,
             "scope": list(pkg.scope),
@@ -432,6 +490,10 @@ def handoff_dict(handoff: Handoff) -> dict[str, Any]:
             {**approval_to_dict(a), "current": a.content_digest == handoff.digest}
             for a in pkg.approvals
         ],
+        "delivery": {
+            "statement": DELIVERY_STATEMENT,
+            **delivery_mod.delivery_dict(pkg),
+        },
         "context": [_context_dict(item) for item in handoff.context],
         "handling": {
             "context_is_untrusted_evidence": True,

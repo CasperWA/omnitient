@@ -99,6 +99,23 @@ omnitient evidence add work/my-package --kind pr \
     --ref https://example.org/owner/repo/pull/12 --by "Your Name"
 ```
 
+Record that a revision was accepted as delivered, and withdraw such a record if it was wrong.
+This needs a **manifest v2** package: `omnitient new` creates one, and an existing v1 package stays v1 until you upgrade it explicitly (preview first, then apply with the file hash the preview printed).
+Acceptance is provenance, not verification: it records who accepted which revision, why, and a snapshot of the evidence entries they chose, and it reads no artifact.
+It does not depend on approvals, readiness or context, and changes none of them:
+
+```bash
+omnitient upgrade work/my-package --to-version 2
+omnitient upgrade work/my-package --to-version 2 --apply --expected-file-sha256 HASH
+omnitient closeout work/my-package --by "Your Name" --revision FULL_DIGEST \
+    --evidence E1 E2 --reason "Why this revision is accepted" --operation-id C1
+omnitient withdraw work/my-package --closeout-id C1 --by "Your Name" \
+    --reason "Why it is withdrawn" --operation-id W1
+```
+
+Repeating a command with the same operation id and the same inputs replays the saved record and writes nothing.
+See [docs/o3-closeout-contract.md](docs/o3-closeout-contract.md).
+
 A worked example with unresolved decisions lives in [examples/](examples/).
 
 See every package in one directory at once.
@@ -124,9 +141,13 @@ omnitient overview work --root repo=$HOME/src/my-repo --json
 | `evidence add` | Append a report, PR or commit reference. |
 | `context add` / `context pin` | Add a context file, or accept its changed digest. |
 | `overview` | Read-only summary of the packages in one explicit directory: declared stage, readiness per handoff stage, advisory next steps. |
-| `schema` | Print the packaged JSON Schema. |
+| `closeout` | Record the acceptance of the present revision of a manifest v2 package, with a snapshot of the chosen evidence. |
+| `withdraw` | Withdraw an earlier acceptance by its id. |
+| `upgrade` | Preview, or with an explicit file hash apply, the upgrade of one package from manifest v1 to v2. |
+| `schema` | Print a packaged JSON Schema: the original v1 one by default, or `--schema-version 2`. |
 
 Exit codes: `0` success; `1` refused or invalid input; `2` usage error; `3` valid but not ready for the requested stage.
+`closeout`, `withdraw` and `upgrade` never evaluate readiness and never exit `3`.
 `overview` reports its own outcomes with `0` and `1` only; a usage error is still `2`, and it never exits `3`.
 Blocked valid packages alone do not fail it, but a malformed, unreadable, non-regular or linked manifest or candidate, a duplicate package id, a refusal or a failure to deliver the report to standard output does.
 The report is built completely before it is written, but a delivery failure can still leave the reader with partial output: the exit status `1` and the `error[overview.stdout]` line on stderr are the signal.

@@ -13,13 +13,17 @@ from typing import Any
 
 from omnitient.model import (
     SCHEMA_ID,
-    SCHEMA_VERSION,
+    SCHEMA_VERSION_2,
+    Acceptance,
     Approval,
     ContextRef,
     Decision,
+    DeliveryRecord,
     Dependency,
     Evidence,
+    EvidenceSnapshot,
     Recommendation,
+    Revision,
     WorkPackage,
 )
 
@@ -129,10 +133,49 @@ def approval_to_dict(item: Approval) -> dict[str, Any]:
     )
 
 
+def snapshot_fingerprint(item: Evidence) -> str:
+    """SHA-256 of the canonical serialization of an evidence entry's metadata."""
+    return hashlib.sha256(canonical_bytes(evidence_to_dict(item))).hexdigest()
+
+
+def snapshot_of(item: Evidence) -> EvidenceSnapshot:
+    return EvidenceSnapshot(item, snapshot_fingerprint(item))
+
+
+def snapshot_to_dict(item: EvidenceSnapshot) -> dict[str, Any]:
+    return {**evidence_to_dict(item.evidence), "metadata_sha256": item.metadata_sha256}
+
+
+def revision_to_dict(item: Revision) -> dict[str, Any]:
+    return {"scheme": item.scheme, "digest": item.digest}
+
+
+def delivery_to_dict(item: DeliveryRecord) -> dict[str, Any]:
+    common: dict[str, Any] = {
+        "operation_id": item.operation_id,
+        "kind": item.kind,
+        "actor": item.actor,
+        "recorded_at": item.recorded_at,
+        "reason": item.reason,
+    }
+    if isinstance(item, Acceptance):
+        return {
+            **common,
+            "package_id": item.package_id,
+            "revision": revision_to_dict(item.revision),
+            "evidence": [snapshot_to_dict(e) for e in item.evidence],
+        }
+    return {**common, "target_acceptance_id": item.target_acceptance_id}
+
+
 def covered_dict(pkg: WorkPackage) -> dict[str, Any]:
-    """The approval-covered content (see docs/o1-contract.md, section 4.2)."""
+    """The approval-covered content (docs/o1-contract.md, section 4.2).
+
+    ``delivery`` is outside it (docs/o3-closeout-contract.md, section 3).
+    """
     return {
-        "schema_version": SCHEMA_VERSION,
+        # The package's own format: 1 for v1 keeps the legacy digest.
+        "schema_version": pkg.schema_version,
         "project": pkg.project,
         "initiative": pkg.initiative,
         "work_package": pkg.work_package,
@@ -151,9 +194,9 @@ def covered_dict(pkg: WorkPackage) -> dict[str, Any]:
 def to_dict(pkg: WorkPackage) -> dict[str, Any]:
     """The full stored form, in fixed key order."""
     covered = covered_dict(pkg)
-    return {
+    data: dict[str, Any] = {
         "schema": SCHEMA_ID,
-        "schema_version": SCHEMA_VERSION,
+        "schema_version": pkg.schema_version,
         "project": pkg.project,
         "initiative": pkg.initiative,
         "work_package": pkg.work_package,
@@ -171,6 +214,9 @@ def to_dict(pkg: WorkPackage) -> dict[str, Any]:
         "evidence": [evidence_to_dict(e) for e in pkg.evidence],
         "approvals": [approval_to_dict(a) for a in pkg.approvals],
     }
+    if pkg.schema_version >= SCHEMA_VERSION_2:
+        data["delivery"] = [delivery_to_dict(d) for d in pkg.delivery]
+    return data
 
 
 def canonical_bytes(data: Any) -> bytes:

@@ -94,9 +94,11 @@ def test_wheel_contents(installed: tuple[Path, Path]) -> None:
         )
     assert "omnitient/data/work-package.schema.json" in names
     assert "omnitient/cli.py" in names
-    for module in ("collection", "overview", "overview_render"):
+    for module in ("collection", "overview", "overview_render", "delivery"):
         assert f"omnitient/{module}.py" in names
     assert "omnitient/data/work-package.schema.json.license" in names
+    assert "omnitient/data/work-package.v2.schema.json" in names
+    assert "omnitient/data/work-package.v2.schema.json.license" in names
     for licence in ("LICENSE", "LICENSES/MIT.txt"):
         assert any(n.endswith(f".dist-info/licenses/{licence}") for n in names)
     assert "License-Expression: MIT" in metadata
@@ -138,6 +140,10 @@ def test_console_script_and_packaged_data_work_outside_the_source_tree(
     schema = run([script, "schema"], cwd=elsewhere)
     assert schema.returncode == 0, schema.stderr
     assert json.loads(schema.stdout)["$defs"]["slug"]
+    assert json.loads(schema.stdout)["properties"]["schema_version"] == {"const": 1}
+    schema_v2 = run([script, "schema", "--schema-version", "2"], cwd=elsewhere)
+    assert schema_v2.returncode == 0, schema_v2.stderr
+    assert json.loads(schema_v2.stdout)["properties"]["schema_version"] == {"const": 2}
 
     package = elsewhere / "pkg" / "work-package.json"
     created = run(
@@ -176,6 +182,17 @@ def test_console_script_and_packaged_data_work_outside_the_source_tree(
     ), rendered.stderr  # scaffold is not ready: TODO objective
     assert json.loads(rendered.stdout)["status"] == "blocked"
     assert run([script, "validate", package], cwd=elsewhere).returncode == 0
+    assert json.loads(package.read_text())["schema_version"] == 2  # new packages are v2
+    preview = run([script, "upgrade", package, "--to-version", "2"], cwd=elsewhere)
+    assert preview.returncode == 0, preview.stderr
+    assert preview.stdout.startswith("no upgrade needed")
+    refused = run(
+        [script, "closeout", package, "--by", "a", "--revision", "0" * 64,
+         "--evidence", "E1", "--reason", "r", "--operation-id", "C1"],
+        cwd=elsewhere,
+    )  # fmt: skip
+    assert refused.returncode == 1  # the scaffold's objective is still a placeholder
+    assert "delivery.incomplete" in refused.stderr
 
     overview = run([script, "overview", elsewhere, "--json"], cwd=elsewhere)
     assert overview.returncode == 0, overview.stderr

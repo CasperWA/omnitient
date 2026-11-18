@@ -78,7 +78,7 @@ def test_unknown_field_is_rejected(package: WorkPackage) -> None:
     ("key", "value"),
     [
         ("schema", "other/thing"),
-        ("schema_version", 2),
+        ("schema_version", 3),
         ("schema_version", True),
         ("project", "Not A Slug"),
         ("work_package", ""),
@@ -99,6 +99,21 @@ def test_field_rules(package: WorkPackage, key: str, value: Any) -> None:
     pkg, problems = parse_dict(data)
     assert pkg is None, problems
     assert problems
+
+
+def test_version_two_on_a_version_one_body_reports_the_missing_delivery(
+    package: WorkPackage,
+) -> None:
+    """Version 2 is a supported format now; this body is refused for what it lacks."""
+    data = to_dict(package)
+    data["schema_version"] = 2
+    result = parse_package(json.dumps(data).encode())
+    assert result.package is None
+    assert "schema.version" not in {d.code for d in result.diagnostics}
+    assert any(
+        d.location == "$.delivery" and "required" in d.message
+        for d in result.diagnostics
+    )
 
 
 def test_missing_required_fields_are_all_reported() -> None:

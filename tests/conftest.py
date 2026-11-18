@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import socket
 from collections.abc import Callable
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -22,6 +23,8 @@ from omnitient.model import (
     ContextRef,
     Decision,
     Dependency,
+    EngineRef,
+    Evidence,
     GitProvenance,
     Limits,
     Recommendation,
@@ -147,4 +150,33 @@ def approved(package: WorkPackage) -> WorkPackage:
         approved_by="user:alice",
         note=None,
         at=datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC),
+    )
+
+
+@pytest.fixture
+def v2_package(package: WorkPackage) -> WorkPackage:
+    """The complete ``package`` fixture in manifest format 2, with live evidence."""
+    return replace(
+        package,
+        schema_version=2,
+        stage="implementation",
+        evidence=(
+            Evidence("E1", "commit", "abcdef1", "user:alice", "2026-01-02T03:04:05Z"),
+            Evidence(
+                "E2",
+                "report",
+                "repo:docs/spec.md",
+                "user:alice",
+                "2026-01-02T03:04:06Z",
+                summary="Findings",
+                engine=EngineRef("run-1", "attempt-1"),
+            ),
+            Evidence(
+                "E3",
+                "pr",
+                "https://example.org/pull/1",
+                "user:bob",
+                "2026-01-02T03:04:07Z",
+            ),
+        ),
     )

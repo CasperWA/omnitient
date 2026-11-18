@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from omnitient import readiness
+from omnitient import delivery, readiness
 from omnitient.collection import (
     Candidate,
     CollectionRefused,
@@ -37,7 +37,7 @@ from omnitient.schema import parse_package
 from omnitient.serialize import content_digest
 
 SCHEMA = "omnitient/overview"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 EntryStatus = Literal["valid", "invalid", "excluded", "unassessed"]
 ResultsStatus = Literal["complete", "partial", "omitted"]
@@ -105,6 +105,9 @@ class PackageSummary:
     title: str
     declared_stage: Stage
     content_digest: str
+    manifest_schema_version: int
+    digest_scheme: str
+    delivery: delivery.DeliverySummary
 
 
 @dataclass(frozen=True)
@@ -236,9 +239,21 @@ def _assess(
     resolved = resolve_context(pkg, mapping)
     reports = readiness.evaluate_all(pkg, resolved)
     del resolved  # embedded context can be large; keep nothing of it
-    summary = PackageSummary(pkg.package_id, pkg.title, pkg.stage, content_digest(pkg))
+    summary = PackageSummary(
+        pkg.package_id,
+        pkg.title,
+        pkg.stage,
+        content_digest(pkg),
+        pkg.schema_version,
+        pkg.digest_scheme,
+        delivery.summarize(pkg),
+    )
     stages = tuple(_stage_report(reports[s], pkg) for s in HANDOFF_STAGES)
-    return Entry(path, "valid", summary, (), stages), pkg
+    deficit = delivery.reserve_deficit_diagnostic(pkg)
+    return (
+        Entry(path, "valid", summary, (deficit,) if deficit else (), stages),
+        pkg,
+    )
 
 
 def _entry_for(

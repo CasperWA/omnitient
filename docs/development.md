@@ -117,8 +117,9 @@ That is specific to this example: a handoff generated from other packages embeds
 | `src/omnitient/collection.py` | Shallow, read-only discovery of the packages in one directory (O2). |
 | `src/omnitient/overview.py` | Assessment of a collection with the O1 engine (O2). |
 | `src/omnitient/overview_render.py` | JSON and text serialisation of an overview, with no I/O (O2). |
+| `src/omnitient/delivery.py` | Delivery records (O3): requests, replay and conflict, status and summaries, the withdrawal reserve, with no I/O. |
 | `src/omnitient/cli.py` | All terminal and file I/O. |
-| `src/omnitient/data/` | Packaged JSON Schema. |
+| `src/omnitient/data/` | Packaged JSON Schemas: v1 (`work-package.schema.json`) and v2 (`work-package.v2.schema.json`). |
 | `tests/` | One test module per area. |
 | `examples/` | A worked work package and its handoff. |
 
@@ -128,6 +129,8 @@ Keep validation, context resolution and rendering free of CLI I/O so they stay t
 
 - Runtime dependencies stay at zero unless a library simplifies the contract materially.
 - Change `docs/o1-contract.md` together with behaviour; the acceptance table there names the tests.
+  O3's manifest v2, delivery records and output versions are specified in [o3-closeout-contract.md](o3-closeout-contract.md), which says where it supersedes O1 and O2; [o3-verification-map.md](o3-verification-map.md) maps its criteria to tests.
+  Manifest v1 behaviour (its digest and stored form) is frozen by `tests/test_v1_compat.py`.
 - A diagnostic code is part of the interface. Add tests when adding or renaming one.
 - The example work package pins digests of repository files.
   After changing a pinned file, run `omnitient context pin` for it and render the handoff again, as described in [examples/README.md](../examples/README.md); a test fails until you do.

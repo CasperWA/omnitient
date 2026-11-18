@@ -92,7 +92,7 @@ def codes(diagnostics: list[Doc]) -> list[str]:
 def refusal_envelope(code: str, location: str, message: str) -> Doc:
     return {
         "schema": "omnitient/overview",
-        "schema_version": 1,
+        "schema_version": 2,
         "discovery_complete": False,
         "assessment_complete": False,
         "results_status": "omitted",
@@ -118,7 +118,7 @@ def test_empty_collection_has_the_exact_envelope(run: Run, coll: Path) -> None:
     assert out == (
         "{\n"
         '  "schema": "omnitient/overview",\n'
-        '  "schema_version": 1,\n'
+        '  "schema_version": 2,\n'
         '  "discovery_complete": true,\n'
         '  "assessment_complete": true,\n'
         '  "results_status": "complete",\n'
@@ -1244,7 +1244,15 @@ def test_json_envelope_key_order_types_and_nullability(
     assert type(doc["assessment_complete"]) is bool
     valid, invalid = doc["entries"][1], doc["entries"][0]
     assert list(valid) == ["path", "status", "package", "diagnostics", "readiness"]
-    assert list(valid["package"]) == ["id", "title", "declared_stage", "content_digest"]
+    assert list(valid["package"]) == [
+        "id",
+        "title",
+        "declared_stage",
+        "content_digest",
+        "manifest_schema_version",
+        "digest_scheme",
+        "delivery",
+    ]
     assert len(valid["package"]["content_digest"]) == 64
     assert list(valid["readiness"]["planning"]) == [
         "ready",
@@ -1565,7 +1573,7 @@ def test_over_limit_output_is_a_bounded_refusal_that_keeps_the_flags(
     assert len(out) < 2000
     assert json.loads(out) == {
         "schema": "omnitient/overview",
-        "schema_version": 1,
+        "schema_version": 2,
         "discovery_complete": True,
         "assessment_complete": True,
         "results_status": "omitted",
