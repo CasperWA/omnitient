@@ -26,9 +26,14 @@ htmlcov/
 *.local.json
 .claude/settings.local.json
 
-# The project skills under .claude/ are part of the repository, although a
-# global ignore rule may hide the directory
+# Only the shipped project skill under .claude/ is part of the repository,
+# although a global ignore rule may hide the directory; settings, worktrees,
+# agent memory and other skills stay ignored
 !.claude/
+.claude/*
+!.claude/skills/
+.claude/skills/*
+!.claude/skills/omnitient-start/
 
 # Derived handoff metadata records host paths and generation time
 *.meta.json

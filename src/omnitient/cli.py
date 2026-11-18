@@ -330,6 +330,66 @@ def cmd_show(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _publish_handoff(
+    directory: Path,
+    stage: HandoffStage,
+    outputs: dict[str, bytes],
+    handoff: render.Handoff,
+    assessed: Assessment | StartInputs,
+    *,
+    force: bool,
+) -> list[Path]:
+    """Publish a handoff bundle, read it back and return the paths written.
+
+    The manifest comes last and the bundle is verified under the reader rule of
+    docs/o1-contract.md section 8.4, so a caller that reports success has a
+    bundle whose files match their recorded SHA-256.
+    """
+    loaded = assessed.loaded
+    manifest_name = f"handoff-{stage}.meta.json"
+    meta = {
+        "schema": MANIFEST_SCHEMA,
+        "schema_version": MANIFEST_SCHEMA_VERSION,
+        "generated_at": ops.timestamp(_now()),
+        "omnitient_version": __version__,
+        "package_file": str(loaded.path.resolve()),
+        "package_file_sha256": loaded.file_sha256,
+        "target_stage": stage,
+        "status": handoff.status,
+        "content_digest": handoff.digest,
+        "host_roots": {
+            name: str(path) for name, path in sorted(assessed.mapping.roots.items())
+        },
+        "outputs": {name: sha256_hex(data) for name, data in outputs.items()},
+    }
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise refusal(
+            "output.unwritable",
+            f"cannot create {escape_text(str(directory))}: {exc.strerror}",
+        ) from exc
+    manifest_data = (_json(meta) + "\n").encode("utf-8")
+    publish_bundle(directory, outputs, (manifest_name, manifest_data), overwrite=force)
+    shown = escape_text(str(directory))
+    try:
+        bundle = read_bundle(directory, manifest_name)
+    except IncompleteBundleError as exc:
+        raise refusal(
+            "output.conflict",
+            f"the bundle in {shown} does not verify after writing, so "
+            f"another writer probably interfered: {exc}. Re-run the command.",
+        ) from exc
+    if bundle.files != outputs or bundle.manifest != json.loads(manifest_data):
+        raise refusal(
+            "output.conflict",
+            f"the bundle in {shown} verifies, but it is another writer's, "
+            "which replaced this command's output after it was written. "
+            "Re-run the command if you need this output.",
+        )
+    return [directory / name for name in (*outputs, manifest_name)]
+
+
 def cmd_render(args: argparse.Namespace) -> int:
     stage: HandoffStage = args.stage
     if args.out == "-" and args.format == "both":
@@ -357,49 +417,10 @@ def cmd_render(args: argparse.Namespace) -> int:
         sys.stdout.flush()
     else:
         directory = Path(args.out)
-        manifest_name = f"handoff-{stage}.meta.json"
-        meta = {
-            "schema": MANIFEST_SCHEMA,
-            "schema_version": MANIFEST_SCHEMA_VERSION,
-            "generated_at": ops.timestamp(_now()),
-            "omnitient_version": __version__,
-            "package_file": str(loaded.path.resolve()),
-            "package_file_sha256": loaded.file_sha256,
-            "target_stage": stage,
-            "status": handoff.status,
-            "content_digest": handoff.digest,
-            "host_roots": {
-                name: str(path) for name, path in sorted(assessed.mapping.roots.items())
-            },
-            "outputs": {name: sha256_hex(data) for name, data in outputs.items()},
-        }
-        try:
-            directory.mkdir(parents=True, exist_ok=True)
-        except OSError as exc:
-            raise refusal(
-                "output.unwritable", f"cannot create {directory}: {exc.strerror}"
-            ) from exc
-        manifest_data = (_json(meta) + "\n").encode("utf-8")
-        publish_bundle(
-            directory, outputs, (manifest_name, manifest_data), overwrite=args.force
-        )
-        try:
-            bundle = read_bundle(directory, manifest_name)
-        except IncompleteBundleError as exc:
-            raise refusal(
-                "output.conflict",
-                f"the bundle in {directory} does not verify after writing, so "
-                f"another writer probably interfered: {exc}. Re-run the command.",
-            ) from exc
-        if bundle.files != outputs or bundle.manifest != json.loads(manifest_data):
-            raise refusal(
-                "output.conflict",
-                f"the bundle in {directory} verifies, but it is another writer's, "
-                "which replaced this command's output after it was written. "
-                "Re-run the command if you need this output.",
-            )
-        for name in (*outputs, manifest_name):
-            _out(f"wrote {directory / name}")
+        for path in _publish_handoff(
+            directory, stage, outputs, handoff, assessed, force=args.force
+        ):
+            _out(f"wrote {path}")
 
     if not report.ready:
         _err(f"BLOCKED for {stage}: {len(report.blockers)} blocker(s)")
@@ -412,10 +433,13 @@ def cmd_render(args: argparse.Namespace) -> int:
 def _resolve_checkout(arg: Path | None) -> start.Checkout:
     """The actual target directory: ``--checkout``, else the working directory."""
     try:
-        path = (arg if arg is not None else Path.cwd()).resolve(strict=True)
+        working = Path.cwd().resolve(strict=True)
+        path = (arg if arg is not None else working).resolve(strict=True)
+        info = path.stat()
     except (OSError, RuntimeError) as exc:
         raise refusal(
-            "start.checkout", f"cannot resolve the target checkout: {exc}"
+            "start.checkout",
+            f"cannot resolve the target checkout: {escape_text(str(exc))}",
         ) from exc
     if not path.is_dir():
         raise refusal("start.checkout", "the target checkout is not a directory")
@@ -426,79 +450,130 @@ def _resolve_checkout(arg: Path | None) -> start.Checkout:
             f"the target checkout lies inside a directory named {forbidden!r}, "
             "which is never a work location",
         )
-    return start.Checkout(path, os.path.lexists(path / ".git"))
+    return start.Checkout(
+        path,
+        info.st_dev,
+        info.st_ino,
+        os.path.lexists(path / ".git"),
+        path == working,
+    )
 
 
-def _usage(message: str) -> int:
-    _err(f"omnitient start: error: {message}")
-    return EXIT_USAGE
+@dataclass(frozen=True)
+class StartInputs:
+    """Everything a start reads before context: package, mapping and target."""
+
+    loaded: LoadedPackage
+    mapping: HostMapping
+    checkout: start.Checkout
+    digest: str
+    facts: start.Facts
 
 
-def cmd_start(args: argparse.Namespace) -> int:
-    expectations = (args.expect_revision, args.expect_file_sha256, args.expect_checkout)
-    given = [e is not None for e in expectations]
-    if (args.handoff and not all(given)) or (not args.handoff and any(given)):
-        return _usage(
-            "--handoff needs --expect-revision, --expect-file-sha256 and "
-            "--expect-checkout, and they are accepted only with --handoff"
-        )
-    for name, value in (
-        ("--expect-revision", args.expect_revision),
-        ("--expect-file-sha256", args.expect_file_sha256),
-    ):
-        if value is not None and not SHA256.fullmatch(value):
-            return _usage(f"{name} must be 64 lowercase hexadecimal characters")
-
-    assessed = _assess(args)
-    loaded, stage = assessed.loaded, start.START_STAGE
+def _start_inputs(args: argparse.Namespace) -> StartInputs:
+    loaded = load_package(args.package)
+    mapping = _mapping(args, loaded.package)
     checkout = _resolve_checkout(args.checkout)
     digest = content_digest(loaded.package)
-    if args.handoff:
-        changed = start.changes_since_preview(
-            start.Shown(
-                args.expect_revision,
-                args.expect_file_sha256,
-                Path(args.expect_checkout).resolve(),
-            ),
-            revision=digest,
-            file_sha256=loaded.file_sha256,
-            checkout=checkout.path,
-        )
-        if changed:
-            raise OmnitientError(
-                Diagnostic(
-                    "start.changed",
-                    "error",
-                    "changed since the preview, so nothing was started: "
-                    + "; ".join(changed)
-                    + ". Show the owner a new preview.",
-                )
-            )
-
-    handoff = render.build_handoff(loaded.package, assessed.resolved, stage)
-    for line in start.preview_lines(
-        loaded.package,
-        digest,
-        handoff.readiness,
-        package_file=loaded.path.resolve(),
+    facts = start.gather_facts(
+        revision=digest,
         file_sha256=loaded.file_sha256,
+        package_file=loaded.path.resolve(),
+        roots=mapping.roots,
         checkout=checkout,
-        roots=assessed.mapping.roots,
-    ):
+    )
+    return StartInputs(loaded, mapping, checkout, digest, facts)
+
+
+def _start_preview_lines(
+    inputs: StartInputs,
+    resolved: list[ResolvedContext],
+    handoff: render.Handoff,
+    document: bytes | None,
+) -> list[str]:
+    ready = handoff.readiness.ready
+    return start.preview_lines(
+        inputs.loaded.package,
+        inputs.digest,
+        handoff.readiness,
+        package_file=inputs.loaded.path.resolve(),
+        file_sha256=inputs.loaded.file_sha256,
+        checkout=inputs.checkout,
+        roots=inputs.mapping.roots,
+        resolved=resolved,
+        token=inputs.facts.token if ready else None,
+        handoff_bytes=len(document) if document is not None else None,
+    )
+
+
+def cmd_start_preview(args: argparse.Namespace) -> int:
+    inputs = _start_inputs(args)
+    resolved = resolve_context(inputs.loaded.package, inputs.mapping)
+    handoff = render.build_handoff(inputs.loaded.package, resolved, start.START_STAGE)
+    # Rendering is part of readiness for the owner's purposes: a handoff that
+    # cannot be rendered (for example over the output bound) must not preview READY.
+    document = render.render_format(handoff, "md") if handoff.readiness.ready else None
+    for line in _start_preview_lines(inputs, resolved, handoff, document):
         _out(line)
     if not handoff.readiness.ready:
         return EXIT_NOT_READY
-    if not args.handoff:
-        _out("no handoff was produced; it needs the owner's go-ahead for this scope")
-        return EXIT_OK
+    _out("no handoff was produced; it needs the owner's go-ahead for this scope")
+    return EXIT_OK
+
+
+def cmd_start_handoff(args: argparse.Namespace) -> int:
+    try:
+        shown = start.parse_token(args.expect_preview)
+    except ValueError as exc:
+        _err(f"omnitient start handoff: error: --expect-preview: {exc}")
+        return EXIT_USAGE
+
+    inputs = _start_inputs(args)
+    if not inputs.checkout.is_working_directory:
+        raise refusal(
+            "start.checkout_not_cwd",
+            "the target checkout is not this command's working directory, so "
+            "implementation cannot start from this session; open a session in the "
+            "target and preview again",
+        )
+    # Cheap comparisons come before any context file is read.
+    changed = inputs.facts.changed_from(shown)
+    if changed:
+        raise refusal(
+            "start.changed",
+            "changed since the preview, so nothing was started: "
+            + ", ".join(changed)
+            + ". Show the owner a new preview.",
+        )
+    out = Path(args.out).resolve()
+    if out == inputs.checkout.path or out.is_relative_to(inputs.checkout.path):
+        raise refusal(
+            "start.out_inside_checkout",
+            "the handoff directory must be outside the target checkout, so the "
+            "handoff is never part of the write scope",
+        )
+
+    resolved = resolve_context(inputs.loaded.package, inputs.mapping)
+    handoff = render.build_handoff(inputs.loaded.package, resolved, start.START_STAGE)
+    if not handoff.readiness.ready:
+        for line in _start_preview_lines(inputs, resolved, handoff, None):
+            _out(line)
+        return EXIT_NOT_READY
     document = render.render_format(handoff, "md")
-    sys.stdout.flush()
-    sys.stdout.buffer.write(
-        f"{start.HANDOFF_BEGIN}\n".encode()
-        + document
-        + f"{start.HANDOFF_END}\n".encode()
+    written = _publish_handoff(
+        out,
+        start.START_STAGE,
+        {start.HANDOFF_FILE: document},
+        handoff,
+        inputs,
+        force=False,
     )
-    sys.stdout.flush()
+    _out("omnitient start: handoff delivered")
+    _out(f"handoff file: {escape_text(str(written[0]))}")
+    _out(f"handoff bytes: {len(document)}")
+    _out(f"handoff newline count: {document.count(b'\n')}")
+    _out(f"handoff sha256: {sha256_hex(document)}")
+    _out(f"manifest: {escape_text(str(written[1]))}")
     return EXIT_OK
 
 
@@ -1022,29 +1097,41 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--force", action="store_true", help="replace existing output files")
     p.set_defaults(func=cmd_render)
 
-    p = sub.add_parser(
-        "start",
-        parents=[host],
-        help="preview the start of implementation, then emit its handoff",
-    )
-    _add_package_argument(p)
-    p.add_argument(
+    p = sub.add_parser("start", help="preview, then deliver, an implementation handoff")
+    start_sub = p.add_subparsers(dest="start_command", required=True, metavar="STEP")
+    target = argparse.ArgumentParser(add_help=False)
+    _add_package_argument(target)
+    target.add_argument(
         "--checkout",
         type=Path,
         metavar="DIR",
         help="target checkout (default: the current directory)",
     )
-    p.add_argument(
-        "--handoff",
-        action="store_true",
-        help="after the owner approved the preview, emit the READY handoff",
+    p = start_sub.add_parser(
+        "preview",
+        parents=[host, target],
+        help="read-only preview of package, revision, target and write scope",
     )
-    p.add_argument("--expect-revision", metavar="DIGEST", help="revision previewed")
-    p.add_argument(
-        "--expect-file-sha256", metavar="HASH", help="package file hash previewed"
+    p.set_defaults(func=cmd_start_preview)
+    p = start_sub.add_parser(
+        "handoff",
+        parents=[host, target],
+        help="after the owner approved the preview, write the verified handoff",
     )
-    p.add_argument("--expect-checkout", metavar="DIR", help="target previewed")
-    p.set_defaults(func=cmd_start)
+    p.add_argument(
+        "--expect-preview",
+        required=True,
+        metavar="TOKEN",
+        help="the preview token the owner confirmed",
+    )
+    p.add_argument(
+        "--out",
+        required=True,
+        type=Path,
+        metavar="DIR",
+        help="new directory outside the target checkout for the handoff bundle",
+    )
+    p.set_defaults(func=cmd_start_handoff)
 
     p = sub.add_parser(
         "approve", parents=[host], help="record approval of the present revision"

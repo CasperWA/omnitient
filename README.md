@@ -131,13 +131,15 @@ omnitient overview work --root repo=$HOME/src/my-repo --json
 ```
 
 Start implementing one package from a Claude Code session opened in the project.
-The project skill `/omnitient-start PACKAGE [--root NAME=DIR]... [--checkout DIR]` runs `omnitient start`, which previews the package, revision, target checkout and proposed write scope and waits for you before anything is edited.
-The command only reads; after you agree, it emits the same READY handoff as `render`, and refuses to if the package, its revision or the checkout changed since the preview.
-A blocked package gets a refusal and no handoff.
+The project skill `/omnitient-start PACKAGE [--root NAME=DIR]... [--checkout DIR]` runs `omnitient start preview`, which only reads and shows the package, revision, target checkout, declared inputs and proposed write scope, and waits for you before anything is written or edited.
+After you agree, `omnitient start handoff` checks that what you were shown is unchanged (the package file, mappings and the target directory itself), then writes the same READY handoff as `render` to a new directory outside the target and verifies it.
+It refuses if anything changed, and a blocked package gets a refusal and no handoff.
+The target must be the session's working directory.
 See [docs/start-contract.md](docs/start-contract.md).
 
 ```bash
-omnitient start work/my-package --root repo=$HOME/src/my-repo --checkout $HOME/src/my-repo
+omnitient start preview --root repo=$HOME/src/my-repo -- work/my-package
+omnitient start handoff --root repo=$HOME/src/my-repo --expect-preview TOKEN --out /tmp/handoff -- work/my-package
 ```
 
 ### Commands
@@ -151,7 +153,7 @@ omnitient start work/my-package --root repo=$HOME/src/my-repo --checkout $HOME/s
 | `approve` | Record approval of the present revision for a stage. |
 | `evidence add` | Append a report, PR or commit reference. |
 | `context add` / `context pin` | Add a context file, or accept its changed digest. |
-| `start` | Read-only preview of starting implementation (package, revision, target checkout, write scope), and with `--handoff` the checked READY handoff. |
+| `start` | `preview`: read-only summary of starting implementation (package, revision, target checkout, inputs, write scope). `handoff`: after the preview is confirmed unchanged, write the verified READY handoff outside the target. |
 | `overview` | Read-only summary of the packages in one explicit directory: declared stage, readiness per handoff stage, advisory next steps. |
 | `closeout` | Record the acceptance of the present revision of a manifest v2 package, with a snapshot of the chosen evidence. |
 | `withdraw` | Withdraw an earlier acceptance by its id. |
