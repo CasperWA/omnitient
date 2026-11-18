@@ -32,11 +32,14 @@ from omnitient.serialize import sha256_hex
 
 START_STAGE: HandoffStage = "implementation"
 HANDOFF_FILE = f"handoff-{START_STAGE}.md"
+PROBE_FILE = f"handoff-{START_STAGE}.reader-probe.txt"
 
-PREVIEW_TAG = "omnitient-start-1"
+PREVIEW_TAG = "omnitient-start-2"
 _HEX64 = re.compile(r"[0-9a-f]{64}")
 
 # What a preview token covers, in token order, as the owner is told about a change.
+# The first EARLY facts are known before any context file is read; the last is the
+# document those reads produce.
 FACT_NAMES = (
     "revision",
     "package file contents",
@@ -44,7 +47,10 @@ FACT_NAMES = (
     "root mappings",
     "target checkout location",
     "target checkout identity",
+    "handoff directory",
+    "rendered handoff",
 )
+EARLY = len(FACT_NAMES) - 1
 
 
 @dataclass(frozen=True)
@@ -56,6 +62,14 @@ class Checkout:
     inode: int
     git_marker: bool
     is_working_directory: bool
+
+
+@dataclass(frozen=True)
+class Destination:
+    """The proposed directory for the handoff and why it cannot be used, if so."""
+
+    path: Path
+    problem: str | None
 
 
 @dataclass(frozen=True)
@@ -73,12 +87,19 @@ class Facts:
     def token(self) -> str:
         return ".".join((PREVIEW_TAG, *self.values))
 
-    def changed_from(self, shown: Facts) -> list[str]:
-        """Names of the facts that differ from the ones previewed."""
+    def changed_from(self, shown: Facts, *, early_only: bool = False) -> list[str]:
+        """Names of the facts that differ from the ones previewed.
+
+        ``early_only`` compares the facts known before any context is read.
+        """
+        count = EARLY if early_only else len(FACT_NAMES)
         return [
             name
             for name, now, then in zip(
-                FACT_NAMES, self.values, shown.values, strict=True
+                FACT_NAMES[:count],
+                self.values[:count],
+                shown.values[:count],
+                strict=True,
             )
             if now != then
         ]
@@ -103,7 +124,10 @@ def gather_facts(
     package_file: Path,
     roots: Mapping[str, Path],
     checkout: Checkout,
+    destination: Path,
+    document: bytes | None = None,
 ) -> Facts:
+    """The facts of a preview; without ``document`` the last one is empty."""
     return Facts(
         (
             revision,
@@ -112,6 +136,8 @@ def gather_facts(
             roots_id(roots),
             _path_id(checkout.path),
             sha256_hex(f"{checkout.device}:{checkout.inode}".encode()),
+            _path_id(destination),
+            sha256_hex(document) if document is not None else "",
         )
     )
 
@@ -216,6 +242,153 @@ def _diagnostics(title: str, items: Sequence[Diagnostic]) -> list[str]:
     return [f"{title}:", *(f"  {escape_text(d.format())}" for d in items)]
 
 
+PAGE_LINES = 200
+PROBE_LENGTHS = (64, 128, 256, 512, 1024)
+ORDINARY_MAX = PROBE_LENGTHS[-1]
+MAX_LONG_LINES = 32
+ANCHOR = 16
+
+
+@dataclass(frozen=True)
+class Page:
+    number: int
+    first: int
+    last: int
+    head: str
+    tail: str
+
+
+@dataclass(frozen=True)
+class LongLine:
+    number: int
+    length: int
+    tail: str
+
+
+@dataclass(frozen=True)
+class ReadingPlan:
+    """What a reader must see to show it received the whole stored document.
+
+    This describes the bytes on disk. It cannot prove what a reader's tool
+    presented; it gives a reader things to check that skipped ranges and cut
+    lines would break (see docs/start-contract.md section 1.4).
+    """
+
+    lines: int
+    pages: tuple[Page, ...]
+    long_lines: tuple[LongLine, ...]
+    probe_lines: int  # probe lines 1..probe_lines must be shown whole
+
+    @property
+    def establishable(self) -> bool:
+        return len(self.long_lines) <= MAX_LONG_LINES
+
+
+def reading_plan(document: bytes) -> ReadingPlan:
+    lines = document.decode("utf-8").split("\n")
+    if lines and lines[-1] == "":
+        lines.pop()
+    pages = tuple(
+        Page(
+            number=i // PAGE_LINES + 1,
+            first=i + 1,
+            last=min(i + PAGE_LINES, len(lines)),
+            head=lines[i][:ANCHOR],
+            tail=lines[min(i + PAGE_LINES, len(lines)) - 1][-ANCHOR:],
+        )
+        for i in range(0, len(lines), PAGE_LINES)
+    )
+    long_lines = tuple(
+        LongLine(n, len(line), line[-ANCHOR:])
+        for n, line in enumerate(lines, start=1)
+        if len(line) > ORDINARY_MAX
+    )
+    longest = max((len(line) for line in lines if len(line) <= ORDINARY_MAX), default=0)
+    needed = next(
+        (i for i, n in enumerate(PROBE_LENGTHS, 1) if n >= longest), len(PROBE_LENGTHS)
+    )
+    return ReadingPlan(len(lines), pages, long_lines, needed)
+
+
+def probe_marker(length: int) -> str:
+    return f"-END-{length}"
+
+
+def probe_document() -> bytes:
+    """Lines of known lengths, each ending in a marker a cut line would lose."""
+    out = []
+    for n in PROBE_LENGTHS:
+        head, tail = f"PROBE-{n}-", probe_marker(n)
+        fill = ("0123456789" * (n // 10 + 1))[: n - len(head) - len(tail)]
+        out.append(head + fill + tail)
+    return ("\n".join(out) + "\n").encode()
+
+
+def _anchor(text: str) -> str:
+    return f"|{escape_text(text)}|"
+
+
+def plan_summary(plan: ReadingPlan) -> str:
+    if not plan.establishable:
+        return (
+            f"cannot be established: {len(plan.long_lines)} lines exceed "
+            f"{ORDINARY_MAX} characters and the limit is {MAX_LONG_LINES}"
+        )
+    return (
+        f"{plan.lines} lines in {len(plan.pages)} pages of at most {PAGE_LINES}, "
+        f"{len(plan.long_lines)} line(s) over {ORDINARY_MAX} characters"
+    )
+
+
+def plan_lines(plan: ReadingPlan) -> list[str]:
+    """The plan as printed after delivery: one fact per line, anchors delimited by |."""
+    return [
+        f"reading plan: {plan_summary(plan)}",
+        (
+            "reader probe: probe file lines 1 to "
+            f"{plan.probe_lines} must each be shown whole"
+        ),
+        *(
+            f"  probe line {i}: {n} characters, ends {_anchor(probe_marker(n))}"
+            for i, n in enumerate(PROBE_LENGTHS[: plan.probe_lines], 1)
+        ),
+        *(
+            (
+                f"page {pg.number}: lines {pg.first}-{pg.last}, "
+                f"first line starts {_anchor(pg.head)}, last line ends {_anchor(pg.tail)}"
+            )
+            for pg in plan.pages
+        ),
+        *(
+            f"long line {ll.number}: {ll.length} characters, ends {_anchor(ll.tail)}"
+            for ll in plan.long_lines
+        ),
+    ]
+
+
+def withheld_reasons(
+    checkout: Checkout, destination: Destination | None, plan: ReadingPlan
+) -> list[str]:
+    """Why a ready preview must not print a token; empty when it may."""
+    reasons = []
+    if not checkout.is_working_directory:
+        reasons.append(
+            "the target is not the working directory of this command, so "
+            "implementation does not start from here: run the preview from the "
+            "target directory"
+        )
+    if destination is None:
+        reasons.append("no handoff directory was proposed with --out")
+    elif destination.problem:
+        reasons.append(f"the proposed handoff directory {destination.problem}")
+    if not plan.establishable:
+        reasons.append(
+            "the handoff cannot be read under the bounded reading procedure "
+            f"({plan_summary(plan)})"
+        )
+    return reasons
+
+
 def preview_lines(
     pkg: WorkPackage,
     digest: str,
@@ -226,8 +399,11 @@ def preview_lines(
     checkout: Checkout,
     roots: Mapping[str, Path],
     resolved: Sequence[ResolvedContext],
+    destination: Destination | None,
+    document: bytes | None,
+    plan: ReadingPlan | None,
     token: str | None,
-    handoff_bytes: int | None,
+    withheld: Sequence[str],
 ) -> list[str]:
     """The owner-facing summary, one fact per line; every host path is escaped."""
     status = (
@@ -237,6 +413,11 @@ def preview_lines(
     )
     inside = package_file.is_relative_to(checkout.path)
     here = checkout.is_working_directory
+    if destination is None:
+        where = "none proposed (--out)"
+    else:
+        state = destination.problem and f"NOT USABLE, it {destination.problem}"
+        where = f"{_path(destination.path)} ({state or 'new, outside the target'})"
     lines = [
         f"omnitient start: {START_STAGE} preview",
         f"status: {status}",
@@ -251,10 +432,7 @@ def preview_lines(
         *(f"    {name} = {_path(path)}" for name, path in sorted(roots.items())),
         f"target checkout: {_path(checkout.path)}",
         f"target checkout identity: device {checkout.device}, inode {checkout.inode}",
-        (
-            "target checkout is the working directory of this command "
-            f"and so of the session: {'yes' if here else 'NO'}"
-        ),
+        f"target checkout is the working directory of this command: {'yes' if here else 'NO'}",
         (
             "checkout checks: path, directory identity and a .git entry only; "
             "the branch, HEAD and local modifications are not observed"
@@ -265,17 +443,18 @@ def preview_lines(
             f"may differ from the target): {'; '.join(root_relations(checkout.path, roots))}"
         ),
         f"package file inside target checkout: {'yes' if inside else 'no'}",
+        f"handoff directory: {where}",
         *_scope_lines(pkg, report, resolved),
         *_diagnostics("blockers", report.blockers),
         *_diagnostics("warnings", report.warnings),
     ]
-    if report.ready and handoff_bytes is not None:
-        lines.append(f"handoff renders: {handoff_bytes} bytes")
-    if report.ready and not here:
-        lines.append(
-            "this target is not the session's working directory, so implementation "
-            "does not start from this session: open a session there and preview again"
-        )
-    if report.ready and token is not None:
+    if report.ready and document is not None and plan is not None:
+        lines += [
+            f"handoff renders: {len(document)} bytes, sha256 {sha256_hex(document)}",
+            f"reading plan: {plan_summary(plan)}",
+        ]
+    if report.ready:
+        lines += [f"no usable handoff token: {reason}" for reason in withheld]
+    if report.ready and token is not None and not withheld:
         lines.append(f"preview token: {token}")
     return lines

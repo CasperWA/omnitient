@@ -131,15 +131,16 @@ omnitient overview work --root repo=$HOME/src/my-repo --json
 ```
 
 Start implementing one package from a Claude Code session opened in the project.
-The project skill `/omnitient-start PACKAGE [--root NAME=DIR]... [--checkout DIR]` runs `omnitient start preview`, which only reads and shows the package, revision, target checkout, declared inputs and proposed write scope, and waits for you before anything is written or edited.
-After you agree, `omnitient start handoff` checks that what you were shown is unchanged (the package file, mappings and the target directory itself), then writes the same READY handoff as `render` to a new directory outside the target and verifies it.
+The project skill `/omnitient-start PACKAGE [--root NAME=DIR]... [--checkout DIR]` runs `omnitient start preview`, which only reads and shows the package, revision, target checkout, proposed handoff directory, declared inputs and proposed write scope, and waits for you before anything is written or edited.
+After you agree, `omnitient start handoff` checks that what you were shown is unchanged (the package file, mappings, the target directory itself, the directory and the rendered handoff), then writes the same READY handoff as `render`, with a small reader probe, to a new directory outside the target and verifies the stored files.
+The session then reads the handoff page by page against a printed plan and stops if it cannot establish that it read it all.
 It refuses if anything changed, and a blocked package gets a refusal and no handoff.
-The target must be the session's working directory.
+A target that is not the working directory can be previewed but gets no token.
 See [docs/start-contract.md](docs/start-contract.md).
 
 ```bash
-omnitient start preview --root repo=$HOME/src/my-repo -- work/my-package
-omnitient start handoff --root repo=$HOME/src/my-repo --expect-preview TOKEN --out /tmp/handoff -- work/my-package
+omnitient start preview --root repo=$HOME/src/my-repo --out /tmp/handoff-1 -- work/my-package
+omnitient start handoff --root repo=$HOME/src/my-repo --expect-preview TOKEN --out /tmp/handoff-1 -- work/my-package
 ```
 
 ### Commands
@@ -153,7 +154,7 @@ omnitient start handoff --root repo=$HOME/src/my-repo --expect-preview TOKEN --o
 | `approve` | Record approval of the present revision for a stage. |
 | `evidence add` | Append a report, PR or commit reference. |
 | `context add` / `context pin` | Add a context file, or accept its changed digest. |
-| `start` | `preview`: read-only summary of starting implementation (package, revision, target checkout, inputs, write scope). `handoff`: after the preview is confirmed unchanged, write the verified READY handoff outside the target. |
+| `start` | `preview`: read-only summary of starting implementation (package, revision, target checkout, inputs, write scope). `handoff`: after the preview is confirmed unchanged, write the verified READY handoff to a new directory outside the target. |
 | `overview` | Read-only summary of the packages in one explicit directory: declared stage, readiness per handoff stage, advisory next steps. |
 | `closeout` | Record the acceptance of the present revision of a manifest v2 package, with a snapshot of the chosen evidence. |
 | `withdraw` | Withdraw an earlier acceptance by its id. |

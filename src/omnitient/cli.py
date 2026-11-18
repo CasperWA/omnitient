@@ -8,15 +8,17 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
+import re
 import sys
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from importlib import resources
 from pathlib import Path
-from typing import Literal, TextIO
+from typing import Literal, NoReturn, TextIO
 
 from omnitient import (
     __version__,
@@ -367,11 +369,11 @@ def _publish_handoff(
     except OSError as exc:
         raise refusal(
             "output.unwritable",
-            f"cannot create {escape_text(str(directory))}: {exc.strerror}",
+            f"cannot create {directory}: {exc.strerror}",
         ) from exc
     manifest_data = (_json(meta) + "\n").encode("utf-8")
     publish_bundle(directory, outputs, (manifest_name, manifest_data), overwrite=force)
-    shown = escape_text(str(directory))
+    shown = directory
     try:
         bundle = read_bundle(directory, manifest_name)
     except IncompleteBundleError as exc:
@@ -439,7 +441,7 @@ def _resolve_checkout(arg: Path | None) -> start.Checkout:
     except (OSError, RuntimeError) as exc:
         raise refusal(
             "start.checkout",
-            f"cannot resolve the target checkout: {escape_text(str(exc))}",
+            f"cannot resolve the target checkout: {exc}",
         ) from exc
     if not path.is_dir():
         raise refusal("start.checkout", "the target checkout is not a directory")
@@ -461,28 +463,66 @@ def _resolve_checkout(arg: Path | None) -> start.Checkout:
 
 @dataclass(frozen=True)
 class StartInputs:
-    """Everything a start reads before context: package, mapping and target."""
+    """Everything a start reads before context: package, mapping, target, directory."""
 
     loaded: LoadedPackage
     mapping: HostMapping
     checkout: start.Checkout
+    destination: start.Destination | None
     digest: str
-    facts: start.Facts
+
+
+def _destination(
+    arg: Path | None, checkout: start.Checkout
+) -> start.Destination | None:
+    """The proposed handoff directory, resolved, and why it cannot be used."""
+    if arg is None:
+        return None
+    try:
+        path = arg.resolve()
+        exists = os.path.lexists(path)
+        parent_ok = path.parent.is_dir()
+    except (OSError, RuntimeError) as exc:
+        raise refusal(
+            "start.out", f"cannot resolve the handoff directory: {exc}"
+        ) from exc
+    problem = None
+    if path == checkout.path or path.is_relative_to(checkout.path):
+        problem = (
+            "is inside the target checkout, so it would be part of the write scope"
+        )
+    elif exists:
+        problem = "already exists, and an existing file or directory is never reused"
+    elif not parent_ok:
+        problem = "has no existing parent directory, and none is created"
+    return start.Destination(path, problem)
 
 
 def _start_inputs(args: argparse.Namespace) -> StartInputs:
     loaded = load_package(args.package)
     mapping = _mapping(args, loaded.package)
     checkout = _resolve_checkout(args.checkout)
-    digest = content_digest(loaded.package)
-    facts = start.gather_facts(
-        revision=digest,
-        file_sha256=loaded.file_sha256,
-        package_file=loaded.path.resolve(),
-        roots=mapping.roots,
-        checkout=checkout,
+    return StartInputs(
+        loaded,
+        mapping,
+        checkout,
+        _destination(args.out, checkout),
+        content_digest(loaded.package),
     )
-    return StartInputs(loaded, mapping, checkout, digest, facts)
+
+
+def _facts(
+    inputs: StartInputs, destination: start.Destination, document: bytes | None
+) -> start.Facts:
+    return start.gather_facts(
+        revision=inputs.digest,
+        file_sha256=inputs.loaded.file_sha256,
+        package_file=inputs.loaded.path.resolve(),
+        roots=inputs.mapping.roots,
+        checkout=inputs.checkout,
+        destination=destination.path,
+        document=document,
+    )
 
 
 def _start_preview_lines(
@@ -491,7 +531,17 @@ def _start_preview_lines(
     handoff: render.Handoff,
     document: bytes | None,
 ) -> list[str]:
-    ready = handoff.readiness.ready
+    plan = start.reading_plan(document) if document is not None else None
+    withheld = (
+        start.withheld_reasons(inputs.checkout, inputs.destination, plan)
+        if plan is not None
+        else []
+    )
+    facts = (
+        _facts(inputs, inputs.destination, document)
+        if inputs.destination is not None and document is not None
+        else None
+    )
     return start.preview_lines(
         inputs.loaded.package,
         inputs.digest,
@@ -501,8 +551,11 @@ def _start_preview_lines(
         checkout=inputs.checkout,
         roots=inputs.mapping.roots,
         resolved=resolved,
-        token=inputs.facts.token if ready else None,
-        handoff_bytes=len(document) if document is not None else None,
+        destination=inputs.destination,
+        document=document,
+        plan=plan,
+        token=facts.token if facts is not None else None,
+        withheld=withheld,
     )
 
 
@@ -521,6 +574,55 @@ def cmd_start_preview(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+# Advice of the shared bundle writer that this command cannot follow: it has no
+# --force, and the directory it names is never reused.
+_START_ADVICE = re.compile(
+    r"[;,]?\s*(?:\(?remove the listed files or )?(?:use --force[^.)]*|[Rr]e-run the command)\)?\.?"
+)
+
+
+def _publish_for_start(
+    out: Path,
+    stage: HandoffStage,
+    outputs: dict[str, bytes],
+    handoff: render.Handoff,
+    inputs: StartInputs,
+) -> list[Path]:
+    """Create ``out`` (it must be new), publish into it and leave nothing half-claimed."""
+    try:
+        out.mkdir()
+    except FileExistsError as exc:
+        raise refusal(
+            "start.out_exists",
+            "the handoff directory already exists; an existing file or directory "
+            "is never reused. Preview again naming a new directory with --out.",
+        ) from exc
+    except OSError as exc:
+        raise refusal(
+            "start.out_unwritable",
+            f"cannot create the handoff directory: {exc.strerror}. Preview again "
+            "naming another new directory with --out.",
+        ) from exc
+    try:
+        return _publish_handoff(out, stage, outputs, handoff, inputs, force=False)
+    except OmnitientError as exc:
+        with contextlib.suppress(OSError):
+            out.rmdir()  # only if empty: nothing that was written is removed
+        raise OmnitientError(
+            [
+                Diagnostic(
+                    d.code,
+                    d.severity,
+                    _START_ADVICE.sub("", d.message).rstrip(" .;,")
+                    + ". Nothing is reused or replaced: preview again naming a new "
+                    "directory with --out.",
+                    d.location,
+                )
+                for d in exc.diagnostics
+            ]
+        ) from exc
+
+
 def cmd_start_handoff(args: argparse.Namespace) -> int:
     try:
         shown = start.parse_token(args.expect_preview)
@@ -533,24 +635,26 @@ def cmd_start_handoff(args: argparse.Namespace) -> int:
         raise refusal(
             "start.checkout_not_cwd",
             "the target checkout is not this command's working directory, so "
-            "implementation cannot start from this session; open a session in the "
-            "target and preview again",
+            "implementation cannot start from here; run the preview and the start "
+            "from the target directory",
         )
     # Cheap comparisons come before any context file is read.
-    changed = inputs.facts.changed_from(shown)
+    destination = inputs.destination
+    if destination is None:  # the parser requires --out; this is a safeguard
+        raise refusal("start.out", "no handoff directory was given with --out")
+    changed = _facts(inputs, destination, None).changed_from(shown, early_only=True)
     if changed:
-        raise refusal(
-            "start.changed",
-            "changed since the preview, so nothing was started: "
-            + ", ".join(changed)
-            + ". Show the owner a new preview.",
+        raise _changed(changed)
+    if destination.problem:
+        code = (
+            "start.out_inside_checkout"
+            if "inside" in destination.problem
+            else "start.out_exists"
         )
-    out = Path(args.out).resolve()
-    if out == inputs.checkout.path or out.is_relative_to(inputs.checkout.path):
         raise refusal(
-            "start.out_inside_checkout",
-            "the handoff directory must be outside the target checkout, so the "
-            "handoff is never part of the write scope",
+            code,
+            f"the handoff directory {destination.problem}. "
+            "Preview again naming a new directory with --out.",
         )
 
     resolved = resolve_context(inputs.loaded.package, inputs.mapping)
@@ -560,21 +664,47 @@ def cmd_start_handoff(args: argparse.Namespace) -> int:
             _out(line)
         return EXIT_NOT_READY
     document = render.render_format(handoff, "md")
-    written = _publish_handoff(
-        out,
+    # What the owner confirmed includes the document itself: an optional input
+    # that appeared or vanished keeps the package READY but changes the handoff.
+    changed = _facts(inputs, destination, document).changed_from(shown)
+    if changed:
+        raise _changed(changed)
+    plan = start.reading_plan(document)
+    if not plan.establishable:
+        raise refusal(
+            "start.unreadable",
+            "the handoff cannot be read under the bounded reading procedure: "
+            + start.plan_summary(plan),
+        )
+    written = _publish_for_start(
+        destination.path,
         start.START_STAGE,
-        {start.HANDOFF_FILE: document},
+        {start.HANDOFF_FILE: document, start.PROBE_FILE: start.probe_document()},
         handoff,
         inputs,
-        force=False,
     )
     _out("omnitient start: handoff delivered")
     _out(f"handoff file: {escape_text(str(written[0]))}")
+    _out(f"reader probe file: {escape_text(str(written[1]))}")
+    _out(f"manifest: {escape_text(str(written[2]))}")
     _out(f"handoff bytes: {len(document)}")
-    _out(f"handoff newline count: {document.count(b'\n')}")
     _out(f"handoff sha256: {sha256_hex(document)}")
-    _out(f"manifest: {escape_text(str(written[1]))}")
+    _out(
+        "stored bytes verified against the manifest; what a reader's tool "
+        "presents is not verified by this command"
+    )
+    for line in start.plan_lines(plan):
+        _out(line)
     return EXIT_OK
+
+
+def _changed(names: list[str]) -> OmnitientError:
+    return refusal(
+        "start.changed",
+        "changed since the preview, so nothing was started: "
+        + ", ".join(names)
+        + ". Show the owner a new preview.",
+    )
 
 
 def cmd_approve(args: argparse.Namespace) -> int:
@@ -1098,6 +1228,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_render)
 
     p = sub.add_parser("start", help="preview, then deliver, an implementation handoff")
+    _escape_usage_errors(p)
     start_sub = p.add_subparsers(dest="start_command", required=True, metavar="STEP")
     target = argparse.ArgumentParser(add_help=False)
     _add_package_argument(target)
@@ -1112,6 +1243,14 @@ def build_parser() -> argparse.ArgumentParser:
         parents=[host, target],
         help="read-only preview of package, revision, target and write scope",
     )
+    p.add_argument(
+        "--out",
+        type=Path,
+        metavar="DIR",
+        help="proposed new directory outside the target for the handoff; "
+        "without it the preview prints no token",
+    )
+    _escape_usage_errors(p)
     p.set_defaults(func=cmd_start_preview)
     p = start_sub.add_parser(
         "handoff",
@@ -1129,8 +1268,9 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
         type=Path,
         metavar="DIR",
-        help="new directory outside the target checkout for the handoff bundle",
+        help="the new directory the preview proposed, outside the target checkout",
     )
+    _escape_usage_errors(p)
     p.set_defaults(func=cmd_start_handoff)
 
     p = sub.add_parser(
@@ -1246,11 +1386,32 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _escape_usage_errors(parser: argparse.ArgumentParser) -> None:
+    """Make a usage error of this parser print its text as escapes.
+
+    argparse echoes the offending argument, which is host-supplied.
+    """
+    original = parser.error
+
+    def error(message: str) -> NoReturn:
+        original(escape_text(message))
+        raise AssertionError("argparse's error exits")  # pragma: no cover
+
+    parser.error = error  # type: ignore[method-assign]
+
+
 def main(argv: Sequence[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    words = sys.argv[1:] if argv is None else list(argv)
+    if words[:1] == ["start"]:
+        _escape_usage_errors(parser)
+    args = parser.parse_args(argv)
     try:
         return int(args.func(args))
     except OmnitientError as exc:
+        # Every diagnostic of `start` can quote a host path, which is data.
+        # Other commands keep their long-standing output.
+        escaped = args.command == "start"
         for diag in exc.diagnostics:
-            _err(diag.format())
+            _err(escape_text(diag.format()) if escaped else diag.format())
         return EXIT_REFUSED
