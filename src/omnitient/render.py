@@ -162,6 +162,9 @@ def _code(text: str) -> str:
     return f"{ticks}{pad}{text}{pad}{ticks}"
 
 
+code_span = _code  # for documents that build on a handoff (review preparation)
+
+
 def _fence(text: str) -> tuple[str, str]:
     longest = max((len(m) for m in _BACKTICKS.findall(text)), default=0)
     return "`" * max(4, longest + 1), (

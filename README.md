@@ -22,6 +22,7 @@ It does not read or write the state of any autonomous-development engine.
 Pre-release, slices O1 and O2.
 The behaviour is specified in [docs/o1-contract.md](docs/o1-contract.md) and, for `omnitient overview`, [docs/o2-overview-contract.md](docs/o2-overview-contract.md).
 Starting implementation from a Claude Code session in the project is specified in [docs/start-contract.md](docs/start-contract.md).
+Preparing one independent review of a Git commit is specified in [docs/review-handoff-contract.md](docs/review-handoff-contract.md).
 
 Supported Python: 3.12 or newer (`requires-python = ">=3.12"`).
 Tested: CPython 3.12, 3.13, 3.14 and 3.15 in CI, standard GIL builds from `actions/setup-python` (for example 3.12.15, 3.13.16, 3.14.8 and 3.15.0), on Linux only; 3.12.15 is the development baseline.
@@ -143,6 +144,20 @@ omnitient start preview --root repo=$HOME/src/my-repo --out /tmp/handoff-1 -- wo
 omnitient start handoff --root repo=$HOME/src/my-repo --expect-preview TOKEN --out /tmp/handoff-1 -- work/my-package
 ```
 
+Hand one commit to an independent reviewer.
+`omnitient review prepare` takes a package that is ready for review, one local repository, a base and a candidate, and one track.
+It resolves the two refs once to full commit ids and the candidate tree, shows the comparison and what it observed about the checkout, and distinguishes those Git identities from the package revision.
+The regular track writes a self-contained request file to a new directory outside the repository and prints a short instruction that names it.
+The Codex track writes nothing and prints one `/autonomous-development:review-existing-pr` instruction with the pinned ids and the package scope, and withholds it when the checkout's HEAD is not the candidate.
+A package that is not ready for review, a ref that does not resolve, or an ambiguous comparison gets a diagnostic and no instruction.
+Nothing is launched, fetched or changed in Git.
+See [docs/review-handoff-contract.md](docs/review-handoff-contract.md).
+
+```bash
+omnitient review prepare --root repo=$HOME/src/my-repo --repo $HOME/src/my-repo --base origin/main --candidate my-branch --track regular --out /tmp/review-1 -- work/my-package
+omnitient review prepare --root repo=$HOME/src/my-repo --repo $HOME/src/my-repo --base origin/main --candidate my-branch --track codex -- work/my-package
+```
+
 ### Commands
 
 | Command | Purpose |
@@ -155,6 +170,7 @@ omnitient start handoff --root repo=$HOME/src/my-repo --expect-preview TOKEN --o
 | `evidence add` | Append a report, PR or commit reference. |
 | `context add` / `context pin` | Add a context file, or accept its changed digest. |
 | `start` | `preview`: read-only summary of starting implementation (package, revision, target checkout, inputs, write scope). `handoff`: after the preview is confirmed unchanged, write the verified READY handoff to a new directory outside the target. |
+| `review` | `prepare`: resolve one local Git comparison once and prepare the handoff for one independent review track (a request file, or one Codex skill instruction), without launching either. |
 | `overview` | Read-only summary of the packages in one explicit directory: declared stage, readiness per handoff stage, advisory next steps. |
 | `closeout` | Record the acceptance of the present revision of a manifest v2 package, with a snapshot of the chosen evidence. |
 | `withdraw` | Withdraw an earlier acceptance by its id. |
@@ -188,6 +204,7 @@ The report is built completely before it is written, but a delivery failure can 
 - [docs/o1-contract.md](docs/o1-contract.md): the O1 contract, schema, readiness rules and acceptance plan.
 - [docs/o2-overview-contract.md](docs/o2-overview-contract.md): the O2 contract for `omnitient overview`: discovery rules, output schema, completeness and limits.
 - [docs/start-contract.md](docs/start-contract.md): `omnitient start` and the `/omnitient-start` project skill.
+- [docs/review-handoff-contract.md](docs/review-handoff-contract.md): `omnitient review prepare`, the comparison it pins and the two review tracks.
 - [docs/development.md](docs/development.md): environment, checks, tests and conventions.
 - [docs/ci.md](docs/ci.md): the CI workflow, runner selection and the steps for making the repository public.
 - [docs/github-handoff.md](docs/github-handoff.md): the state of the GitHub repository, its templates and labels, and the independent review handoff.

@@ -13,7 +13,7 @@ import json
 import os
 import re
 import sys
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from importlib import resources
@@ -23,10 +23,12 @@ from typing import Literal, NoReturn, TextIO
 from omnitient import (
     __version__,
     delivery,
+    gitref,
     ops,
     overview_render,
     readiness,
     render,
+    review,
     rules,
     start,
 )
@@ -38,7 +40,7 @@ from omnitient.context import (
     resolve_context,
 )
 from omnitient.errors import Diagnostic, OmnitientError, refusal
-from omnitient.limits import MAX_PACKAGE_BYTES
+from omnitient.limits import MAX_OUTPUT_BYTES, MAX_PACKAGE_BYTES
 from omnitient.model import (
     CONTEXT_MODES,
     EVIDENCE_KINDS,
@@ -340,6 +342,7 @@ def _publish_handoff(
     assessed: Assessment | StartInputs,
     *,
     force: bool,
+    extra: Mapping[str, object] | None = None,
 ) -> list[Path]:
     """Publish a handoff bundle, read it back and return the paths written.
 
@@ -363,6 +366,7 @@ def _publish_handoff(
             name: str(path) for name, path in sorted(assessed.mapping.roots.items())
         },
         "outputs": {name: sha256_hex(data) for name, data in outputs.items()},
+        **(extra or {}),
     }
     try:
         directory.mkdir(parents=True, exist_ok=True)
@@ -705,6 +709,176 @@ def _changed(names: list[str]) -> OmnitientError:
         + ", ".join(names)
         + ". Show the owner a new preview.",
     )
+
+
+def _review_destination(arg: Path, repo: Path) -> Path:
+    """The new directory for the regular track's file, resolved and checked."""
+    try:
+        path = arg.resolve()
+        exists = os.path.lexists(path)
+        parent_ok = path.parent.is_dir()
+    except (OSError, RuntimeError) as exc:
+        raise refusal(
+            "review.out", f"cannot resolve the output directory: {exc}"
+        ) from exc
+    if path == repo or path.is_relative_to(repo):
+        raise refusal(
+            "review.out_inside_repo",
+            "the output directory is inside the repository, where it would "
+            "change the work tree; name a directory outside it with --out",
+        )
+    if exists:
+        raise refusal(
+            "review.out_exists",
+            "the output directory already exists, and an existing file or "
+            "directory is never reused; name a new directory with --out",
+        )
+    if not parent_ok:
+        raise refusal(
+            "review.out_parent",
+            "the output directory has no existing parent directory, and none is "
+            "created; name a new directory in an existing one with --out",
+        )
+    if not review.path_is_literal(path / review.REQUEST_FILE):
+        raise refusal(
+            "review.out_not_literal",
+            "the path of the request file holds characters that cannot be given "
+            "to a reader as they are, so no usable instruction could name it; "
+            "use a directory whose absolute path has only letters, digits and "
+            "._+=@:,/- after the leading slash",
+        )
+    return path
+
+
+def _publish_for_review(
+    out: Path,
+    outputs: dict[str, bytes],
+    handoff: render.Handoff,
+    assessed: Assessment,
+    extra: Mapping[str, object],
+) -> list[Path]:
+    """Create ``out`` (it must be new) and publish into it; leave nothing half-claimed."""
+    try:
+        out.mkdir()
+    except FileExistsError as exc:
+        raise refusal(
+            "review.out_exists",
+            "the output directory already exists, and an existing file or "
+            "directory is never reused; name a new directory with --out",
+        ) from exc
+    except OSError as exc:
+        raise refusal(
+            "review.out_unwritable",
+            f"cannot create the output directory: {exc.strerror}",
+        ) from exc
+    try:
+        return _publish_handoff(
+            out,
+            review.REVIEW_STAGE,
+            outputs,
+            handoff,
+            assessed,
+            force=False,
+            extra=extra,
+        )
+    except OmnitientError:
+        with contextlib.suppress(OSError):
+            out.rmdir()  # only if empty: nothing that was written is removed
+        raise
+
+
+def cmd_review_prepare(args: argparse.Namespace) -> int:
+    track: review.Track = args.track
+    if track == "regular" and args.out is None:
+        _err("omnitient review prepare: error: --track regular needs --out DIR")
+        return EXIT_USAGE
+    if track == "codex" and args.out is not None:
+        _err(
+            "omnitient review prepare: error: --track codex writes nothing, so "
+            "it takes no --out"
+        )
+        return EXIT_USAGE
+
+    assessed = _assess(args)
+    pkg = assessed.loaded.package
+    digest = content_digest(pkg)
+    comparison = gitref.resolve(
+        args.repo,
+        gitref.validate_ref("base", args.base),
+        gitref.validate_ref("candidate", args.candidate),
+        args.basis,
+    )
+    report = assessed.reports[review.REVIEW_STAGE]
+
+    def show(withheld: Sequence[str], request_file: Path | None = None) -> None:
+        for line in review.preparation_lines(
+            pkg,
+            digest,
+            report,
+            comparison,
+            track,
+            request_file=request_file,
+            withheld=withheld,
+        ):
+            _out(escape_text(line))
+
+    if not report.ready:
+        show(["the package is not ready for review; see the blockers"])
+        return EXIT_NOT_READY
+
+    view = review.independent_view(pkg)
+    handoff = render.build_handoff(view, assessed.resolved, review.REVIEW_STAGE)
+
+    if track == "codex":
+        mismatch = review.checkout_mismatch(comparison)
+        if mismatch:
+            show(
+                [
+                    (
+                        f"{mismatch}. The review skill reviews the checked-out "
+                        "commit and refuses any other; check out the candidate "
+                        "commit in a clean work tree and prepare again"
+                    )
+                ]
+            )
+            return EXIT_NOT_READY
+        instruction = review.codex_instruction(pkg, digest, comparison)
+        show([])
+        _out("launch instruction (one line, for the owner to invoke):")
+        _out(instruction)
+        return EXIT_OK
+
+    directory = _review_destination(args.out, comparison.repo)
+    markdown = render.render_format(handoff, "md").decode("utf-8")
+    document = review.regular_document(markdown, view, digest, comparison).encode(
+        "utf-8"
+    )
+    if len(document) > MAX_OUTPUT_BYTES:
+        raise refusal(
+            "output.too_large",
+            f"the review request would be {len(document)} bytes; the limit is "
+            f"{MAX_OUTPUT_BYTES}. Nothing was truncated; mark large optional "
+            "context as mode 'reference'.",
+        )
+    extra = {
+        "review": {
+            "track": track,
+            "repository": str(comparison.repo),
+            "base_commit": comparison.base,
+            "candidate_commit": comparison.candidate,
+            "candidate_tree": comparison.candidate_tree,
+            "basis": comparison.basis,
+            "basis_commit": comparison.basis_commit,
+            "basis_tree": comparison.basis_tree,
+        }
+    }
+    written = _publish_for_review(
+        directory, {review.REQUEST_FILE: document}, handoff, assessed, extra
+    )
+    show([], written[0])
+    _out("launch instruction (for a fresh read-only review session):")
+    _out(review.regular_instruction(written[0]))
+    return EXIT_OK
 
 
 def cmd_approve(args: argparse.Namespace) -> int:
@@ -1274,6 +1448,45 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_start_handoff)
 
     p = sub.add_parser(
+        "review", help="prepare a handoff for one independent review (launches none)"
+    )
+    _escape_usage_errors(p)
+    review_sub = p.add_subparsers(dest="review_command", required=True, metavar="STEP")
+    p = review_sub.add_parser(
+        "prepare",
+        parents=[host],
+        help="resolve one local comparison and prepare the handoff for one track",
+    )
+    _add_package_argument(p)
+    p.add_argument(
+        "--repo",
+        required=True,
+        type=Path,
+        metavar="DIR",
+        help="the top directory of the local Git repository",
+    )
+    p.add_argument("--base", required=True, metavar="REF", help="the base revision")
+    p.add_argument(
+        "--candidate", required=True, metavar="REF", help="the revision to review"
+    )
+    p.add_argument(
+        "--basis",
+        choices=review.BASES,
+        default="merge-base",
+        help="compare the candidate with the merge base of base and candidate "
+        "(default) or with the base commit itself",
+    )
+    p.add_argument("--track", required=True, choices=review.TRACKS)
+    p.add_argument(
+        "--out",
+        type=Path,
+        metavar="DIR",
+        help="regular track only: a new directory outside the repository",
+    )
+    _escape_usage_errors(p)
+    p.set_defaults(func=cmd_review_prepare)
+
+    p = sub.add_parser(
         "approve", parents=[host], help="record approval of the present revision"
     )
     _add_package_argument(p)
@@ -1403,15 +1616,15 @@ def _escape_usage_errors(parser: argparse.ArgumentParser) -> None:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     words = sys.argv[1:] if argv is None else list(argv)
-    if words[:1] == ["start"]:
+    if words[:1] in (["start"], ["review"]):
         _escape_usage_errors(parser)
     args = parser.parse_args(argv)
     try:
         return int(args.func(args))
     except OmnitientError as exc:
-        # Every diagnostic of `start` can quote a host path, which is data.
+        # Every diagnostic of `start` and `review` can quote a host path or a ref, which is data.
         # Other commands keep their long-standing output.
-        escaped = args.command == "start"
+        escaped = args.command in {"start", "review"}
         for diag in exc.diagnostics:
             _err(escape_text(diag.format()) if escaped else diag.format())
         return EXIT_REFUSED
