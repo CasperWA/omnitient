@@ -148,7 +148,7 @@ Hand one commit to an independent reviewer.
 `omnitient review prepare` takes a package that is ready for review, one local repository, a base and a candidate, and one track.
 It resolves the two refs once to full commit ids and the candidate tree, shows the comparison and what it observed about the checkout, and distinguishes those Git identities from the package revision.
 The regular track writes a self-contained request file to a new directory outside the repository and prints a short instruction that names it.
-The Codex track writes nothing and prints one `/autonomous-development:review-existing-pr` instruction with the pinned ids and the package scope, and withholds it when the checkout's HEAD is not the candidate.
+The Codex track writes nothing and prints one `/autonomous-development:review-existing-pr` instruction with the pinned ids and the encoded package criteria (objective, scope, exclusions, acceptance and resolved decisions) that the session passes as the controller's import description, and withholds it when the checkout's HEAD is not the candidate.
 A package that is not ready for review, a ref that does not resolve, or an ambiguous comparison gets a diagnostic and no instruction.
 Nothing is launched, fetched or changed in Git.
 See [docs/review-handoff-contract.md](docs/review-handoff-contract.md).

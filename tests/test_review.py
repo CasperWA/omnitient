@@ -13,6 +13,7 @@ from __future__ import annotations
 import os
 import re
 import subprocess
+import unicodedata
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
@@ -279,6 +280,41 @@ class TestRegularTrack:
         assert "Read the change through the commit ids" in document
         assert "checkout: HEAD is" in stdout
 
+    @pytest.mark.parametrize(
+        ("branch", "escaped"),
+        [
+            ("feature\u200bx", "feature\\u200bx"),
+            ("rtl\u202egnp", "rtl\\u202egnp"),
+            ("both\u200b\u202ez", "both\\u200b\\u202ez"),
+        ],
+    )
+    def test_an_invisible_branch_name_is_escaped_once_in_file_and_terminal(
+        self, prepare: Prepare, out: Path, work_tree: Tree, branch: str, escaped: str
+    ) -> None:
+        git(work_tree.path, "checkout", "-q", "-b", branch)
+        assert git(work_tree.path, "symbolic-ref", "--short", "HEAD") == branch
+        code, stdout, err = prepare("regular", out=out, candidate=work_tree.candidate)
+        assert code == 0, err
+        document = (out / "review-request.md").read_text(encoding="utf-8")
+        state = f"HEAD is {work_tree.candidate} (on branch {escaped})"
+        assert f"- Observed: `{state}`" in document
+        assert f"checkout: {state}" in stdout.splitlines()
+        for text in (document, stdout, err):
+            assert not any(
+                unicodedata.category(c) in {"Cf", "Cc"} and c != "\n" for c in text
+            ), "no raw formatting or control character is left"
+            assert "\\\\u" not in text, "escaped twice"
+        assert document.count(escaped) == 1
+
+    def test_a_plain_branch_name_is_shown_as_it_is(
+        self, prepare: Prepare, out: Path, work_tree: Tree
+    ) -> None:
+        code, stdout, _ = prepare("regular", out=out)
+        assert code == 0
+        document = (out / "review-request.md").read_text(encoding="utf-8")
+        assert f"`HEAD is {work_tree.candidate} (on branch feature)`" in document
+        assert f"checkout: HEAD is {work_tree.candidate} (on branch feature)" in stdout
+
 
 class TestCodexTrack:
     def test_one_instruction_with_scope_and_pinned_refs(
@@ -310,10 +346,13 @@ class TestCodexTrack:
         ):
             assert fact in head
         assert items == [
+            "objective: Build the thing.\\x0aSecond line.",
             "scope 1: Implement A",
             "scope 2: Implement B",
             "exclusion 1: No C",
             "acceptance 1: A works",
+            "decision D1 question: Which format\\x3f",
+            "decision D1 answer: JSON",
         ]
         assert stdout.count(SKILL) == 1
 
@@ -356,6 +395,133 @@ class TestCodexTrack:
         assert code == 1
         assert "review.instruction_too_long" in err
         assert SKILL not in stdout
+
+    def test_the_session_is_told_to_pass_the_criteria_as_the_import_description(
+        self, prepare: Prepare
+    ) -> None:
+        _, stdout, _ = prepare("codex")
+        body = instruction_of(stdout)[len(SKILL) + 2 : -1]
+        head, *items = body.split(" | ")
+        for phrase in (
+            "import description",
+            "exactly as written",
+            "without decoding",
+            "stop and report",
+            "base mode exact",
+        ):
+            assert phrase in head
+        assert items[0].startswith("objective: ")
+        assert any(i.startswith("decision ") for i in items)
+
+    def test_encoded_criteria_survive_unchanged_through_the_cli(
+        self,
+        run: Run,
+        write_package: Write,
+        ready: WorkPackage,
+        repo: Path,
+        work_tree: Tree,
+    ) -> None:
+        hostile = 'Quote " and \\x41 and ` and $(x); a | b 😀 ünï'
+        pkg = review_approved(
+            replace(
+                ready,
+                approvals=(),
+                objective=f"Objective {hostile}\nSecond line",
+                scope=(f"Scope {hostile}",),
+                exclusions=(f"Exclusion {hostile}",),
+                acceptance=(f"Acceptance {hostile}",),
+                decisions=(
+                    Decision(
+                        "D1",
+                        f"Question {hostile}?",
+                        "resolved",
+                        "user:alice",
+                        "planning",
+                        rationale="Not part of the criteria.",
+                        answer=f"Answer {hostile}",
+                    ),
+                    Decision(
+                        "D2", "Another?", "resolved", "user:alice", "review",
+                        answer="Yes",
+                    ),
+                ),
+            )
+        )  # fmt: skip
+        prepare = Prepare(run, write_package(pkg, "exact"), repo, work_tree)
+        code, stdout, err = prepare("codex")
+        assert code == 0, err
+        body = instruction_of(stdout)[len(SKILL) + 2 : -1]
+        head, *items = body.split(" | ")
+        assert "import description" in head
+        assert not re.search(r"[`$;'\"\n\r\t]", body)
+        assert [decode(i.split(": ", 1)[1]) for i in items] == [
+            f"Objective {hostile}\nSecond line",
+            f"Scope {hostile}",
+            f"Exclusion {hostile}",
+            f"Acceptance {hostile}",
+            f"Question {hostile}?",
+            f"Answer {hostile}",
+            "Another?",
+            "Yes",
+        ]
+        assert [i.split(": ", 1)[0] for i in items] == [
+            "objective",
+            "scope 1",
+            "exclusion 1",
+            "acceptance 1",
+            "decision D1 question",
+            "decision D1 answer",
+            "decision D2 question",
+            "decision D2 answer",
+        ]
+        assert "Not part of the criteria" not in decode(body)
+        assert stdout.count(SKILL) == 1
+
+    def test_the_size_limit_is_unchanged_and_refuses_the_whole_instruction(
+        self,
+        run: Run,
+        write_package: Write,
+        ready: WorkPackage,
+        repo: Path,
+        work_tree: Tree,
+    ) -> None:
+        assert review.MAX_INSTRUCTION_CHARS == 8000
+
+        def attempt(size: int) -> tuple[int, str, str]:
+            pkg = review_approved(replace(ready, approvals=(), objective="x" * size))
+            return Prepare(run, write_package(pkg, f"size{size}"), repo, work_tree)(
+                "codex"
+            )
+
+        _, stdout, _ = attempt(1)
+        fits = 1 + review.MAX_INSTRUCTION_CHARS - len(instruction_of(stdout))
+        code, stdout, err = attempt(fits)
+        assert code == 0, err
+        assert len(instruction_of(stdout)) == review.MAX_INSTRUCTION_CHARS
+        code, stdout, err = attempt(fits + 1)
+        assert code == 1
+        assert "review.instruction_too_long" in err
+        assert "launch instruction" not in stdout
+        assert SKILL not in stdout + err
+
+    def test_a_long_decision_alone_can_exceed_the_limit(
+        self,
+        run: Run,
+        write_package: Write,
+        ready: WorkPackage,
+        repo: Path,
+        work_tree: Tree,
+    ) -> None:
+        long_decision = Decision(
+            "D1", "Q?", "resolved", "user:alice", "review", answer="é" * 2500
+        )
+        pkg = review_approved(replace(ready, approvals=(), decisions=(long_decision,)))
+        prepare = Prepare(run, write_package(pkg, "long-decision"), repo, work_tree)
+        code, stdout, err = prepare("codex")
+        assert code == 1
+        assert "review.instruction_too_long" in err
+        assert "decision text" in err
+        assert SKILL not in stdout + err
 
 
 class TestComparison:
@@ -709,10 +875,11 @@ class TestLiteralText:
         assert '"' not in body
         assert not re.search(r"[`$;'\n\r\t]", body)
         _, *items = body.split(" | ")
-        assert [decode(i.split(": ", 1)[1]) for i in items[:3]] == list(hostile)
-        assert all(i.startswith(f"scope {n}: ") for n, i in enumerate(items[:3], 1))
-        assert items[3] == "acceptance 1: A works"
-        assert len(items) == 4
+        scope = items[1:4]
+        assert [decode(i.split(": ", 1)[1]) for i in scope] == list(hostile)
+        assert all(i.startswith(f"scope {n}: ") for n, i in enumerate(scope, 1))
+        assert items[4] == "acceptance 1: A works"
+        assert len(items) == 7  # objective, 3 scope, acceptance, one decision
 
     def test_ref_and_path_text_do_not_reach_the_codex_instruction(
         self, prepare: Prepare, work_tree: Tree

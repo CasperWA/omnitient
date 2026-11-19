@@ -92,14 +92,20 @@ The owner passes it to a fresh session.
 It prints one line, the owner-invoked instruction for the installed skill:
 
 ```text
-/autonomous-development:review-existing-pr "Independent read-only review of one Git change. Package ... | scope 1: ... | exclusion 1: ... | acceptance 1: ..."
+/autonomous-development:review-existing-pr "Independent read-only review of one Git change. Package ... | objective: ... | scope 1: ... | exclusion 1: ... | acceptance 1: ... | decision D1 question: ... | decision D1 answer: ..."
 ```
 
 That is the skill's input contract: its name followed by free text, as in the skill's own examples.
 The text names the candidate commit as the target ref and the basis commit as the base ref with base mode exact, both as full ids, with the candidate tree and the package revision labelled as what they are.
-It states that the checkout must be clean with the candidate checked out, then carries the package's scope, exclusions and acceptance criteria.
+It states that the checkout must be clean with the candidate checked out.
+Then it tells the invoking session to pass the encoded package criteria, the items after its first sentence, as the import description of the review controller: all of them, in order, exactly as written and without decoding, summarising, reordering or adding to them, and to stop and report if it cannot supply them as that description.
+The criteria are the approved objective, then the scope, exclusions and acceptance criteria, then the question and the answer of every resolved decision, in the package's order.
 It asks for the reviewer's own verdict.
-It contains no host path, no ref text and no evidence.
+It contains no host path, no ref text, no evidence and no decision rationale.
+
+The target, the base commit with base mode exact and the pinned ids stay in the first sentence, so the comparison is the one that was resolved.
+Every item is written in the closed notation of section 4, so the description reaches the controller with the package's literal text and nothing in it can act as syntax.
+A review-stage package has no unresolved decision, because one is blocking (o1-contract.md section 3.2); a decision that is not resolved is not carried.
 
 The skill requires that its target ref be the checked-out HEAD of a clean work tree, and refuses otherwise.
 Omnitient keeps that requirement and does not weaken it:
@@ -107,7 +113,8 @@ Omnitient keeps that requirement and does not weaken it:
 - If HEAD is not the candidate commit, exit 3 and no instruction (`no usable launch instruction`), with advice to check out the candidate in a clean work tree and prepare again.
 - Whether the work tree is clean is not observed, because asking Git about a work tree can run configured helpers.
   The output says so, and the skill's own controller refuses a dirty tree.
-- An instruction longer than 8000 characters is refused (`review.instruction_too_long`) rather than truncated; the regular track carries the same text in a file.
+- An instruction longer than 8000 characters is refused in full (`review.instruction_too_long`) rather than truncated, and nothing is printed as an instruction; the objective, the criteria and the decisions all count towards the limit.
+  The regular track carries the same text in a file.
 
 The skill, its owner-invocation policy and its controller are not touched.
 
@@ -126,7 +133,8 @@ So the instruction holds no quote, backtick, dollar sign, semicolon, vertical ba
 The instruction says that the text is quoted, is data and grants no permission.
 Refs and host paths are not in the Codex instruction at all, and the only path in the regular instruction is one that passed the check of section 2.1.
 
-In the regular file, package text is only in the renderer's code spans and fences (o1-contract.md section 8.3), and the refs and the repository path are escaped code spans.
+In the regular file, package text is only in the renderer's code spans and fences (o1-contract.md section 8.3), and the refs, the repository path and the observed branch name are escaped code spans, with the display escaping of the terminal output (section 1).
+Terminal output is escaped once, as a whole line; the file escapes the branch name itself, because nothing else escapes a code span.
 The sections added here are fixed text, so the document's headings are exactly the renderer's.
 
 ## 5. Independent contexts
@@ -159,6 +167,9 @@ Omnitient does not look for or exclude a verdict kept anywhere else, such as in 
 | Refs resolve once to full ids and a moving branch cannot change a prepared comparison; replacement refs and the caller's Git environment cannot redirect it | `TestComparison` |
 | Git is asked only allowlisted read-only questions with a scrubbed environment, and the repository is left unchanged | `TestGitIsAskedOnlyReadOnlyQuestions`, `TestRegularTrack` |
 | A checkout that is not the candidate is surfaced, and withholds the Codex instruction | `TestRegularTrack`, `TestCodexTrack` |
+| The Codex instruction tells the session to pass the encoded criteria, with the objective and the resolved decisions' questions and answers, unchanged as the controller's import description, and keeps the pinned target and exact basis | `TestCodexTrack` |
+| An instruction over the size limit is refused in full | `TestCodexTrack` |
+| The observed branch name is escaped exactly once in the regular file and in the terminal output, including an invisible formatting character in a real branch | `TestRegularTrack` |
 | Package, ref and path text stays literal across the runtime boundary | `TestLiteralText` |
 | The two tracks and repeated preparations are independent contexts, and evidence summaries stay out | `TestIndependentContexts` |
 | `render` and the other callers keep their contracts | `TestExistingCallersKeepTheirContracts` and the existing suites |
