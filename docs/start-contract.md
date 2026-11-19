@@ -137,21 +137,71 @@ This says nothing about what a reader's tool presents afterwards, and a digest o
 This is established by a reading procedure that checks the presented content against facts Omnitient prints.
 The plan covers the document in pages of at most 200 lines and prints, for each page, its line range, the first 16 characters of its first line and the last 16 characters of its last line.
 It prints every line longer than 1024 characters with its number, length and last 16 characters, and a reader probe: a file of lines of 64, 128, 256, 512 and 1024 characters, each ending in a marker with its length.
-The procedure, which the skill follows with the Read tool, is:
+Lines are counted at a line feed only, and characters are code points, not bytes.
+
+The plan is printed once, on stdout, after `handoff delivered`.
+It is not in the bundle, so the text a session was shown is the only copy it has, and that text can arrive cut: a tool may drop the middle or the end of a long output.
+The procedure therefore verifies the plan before following it.
+
+**Verifying the plan.**
+The plan is every output line from the `reading plan:` line to the end.
+Nothing is read, and so nothing is edited, unless all of these hold, using only the lines as printed:
+
+- exactly one `reading plan:` line, complete, as `reading plan: N lines in P pages of at most 200, K line(s) over 1024 characters`, identical to the `reading plan:` line of the preview the owner confirmed (a summary reading `cannot be established` is a stop);
+- exactly one `reader probe:` line naming M, then probe lines 1 to M, each once, in order;
+- exactly P page entries, numbered 1 to P once each, in order, with page 1 starting at line 1, every other page starting on the line after the previous one ends, no page over 200 lines, and page P ending at line N;
+- exactly K long-line entries, for K distinct line numbers within 1 to N, each longer than 1024 characters;
+- every line after the summary is one of those entries, complete with its closing `|`, so a cut, repeated or unrecognised line is a stop;
+- every anchor decodes as below and names no character the reader cannot observe.
+
+The checks use only the counts the plan already prints, so the summary is the declaration the entries are held to, and the confirmed preview is where the summary was first shown.
+A summary that agrees with the preview and entries that agree with the summary are what show that a plan was not cut in the middle or at the end.
+This is independent of whether the handoff itself is later read completely.
+
+**Anchors.**
+An anchor is printed between two `|` delimiters that are not part of it, so an anchor may itself contain `|`: in a page entry the head ends at the one `|, last line ends |`, and every other anchor ends at the last `|` of its line.
+The anchor text is the first or last 16 characters of the line (all of it when shorter) in the notation of `escape_text` (`overview_render.py`), which the other commands use for the same purpose:
+
+| Written | Is |
+| --- | --- |
+| `\\` | one backslash |
+| `\xNN` | the character with that code point, two lowercase hexadecimal digits |
+| `\uNNNN` | the same with four digits, for code points up to U+FFFF |
+| `\UNNNNNNNN` | the same with eight digits, above U+FFFF |
+| any other character | itself, including the vertical bar and the space |
+
+A reader decodes from left to right and compares the decoded text, never the printed form.
+Left to right keeps the notation unambiguous: the document's own characters `\x09` are printed `\\x09` and decode to a backslash and `x09`, and only `\x09` alone is a tab.
+Any other backslash sequence (including uppercase hexadecimal, a short escape or a code point above U+10FFFF) is ambiguous and is a stop.
+
+The decoded head is compared as the start, and the decoded tail as the end, of the line as the reader's tool shows it, after its line number and untrimmed.
+What a reader can observe is fixed as follows:
+
+- A tab (`\x09`) is compared as a tab; a tool that shows it as spaces fails the comparison, which is a stop.
+- A carriage return (`\x0d`) is removed from the decoded anchor and from the shown line before comparing, because a tool may or may not show it. So the procedure does not tell CRLF from LF. A tool that starts a new line at a lone carriage return presents lines that are not the planned lines, so a page edge differs and the comparison fails.
+- Any other escaped character (`\xNN` other than `\x09` and `\x0d`, `\uNNNN`, `\UNNNNNNNN`) is a control, space-like, formatting or unassigned character that a tool may show as nothing or as another character. The reader does not guess: it stops, naming the page or line and the code point.
+
+**Reading.**
 
 1. Read the probe file. The probe lines up to the one the plan names (the smallest that is at least as long as the longest ordinary line) must each be shown whole, ending in their marker. A reader that cuts them cannot show ordinary lines of that length whole.
 2. Read each page in plan order, asking for exactly its line range. The line numbers shown must be that range with none missing and none repeated; the first line must start, and the last line end, as planned.
 3. Every listed long line must end as planned.
-4. Report the pages read and the checks done to the owner before any edit. If anything fails or cannot be completed, stop before any edit and say exactly what could not be read.
+4. Report that the plan was complete and the pages read and checks done to the owner before any edit. If anything fails or cannot be completed, stop before any edit and say exactly what could not be read.
 
 A skipped range, a page that ends early, a page that was never read, a long line that the reader cuts, and a reader that cuts ordinary lines are each detected; `tests/test_start.py::TestReadingProcedure` shows each against real handoffs with a simulated reader, and shows that the round-one rule (the last line number reached equals the line count) accepted a skipped middle and an unread page.
+`TestPlanIsVerifiedFirst` cuts the plan text itself, in the middle and at the end, with the handoff intact and the reader faithful: every cut stops the procedure before a file is read, and the round-two procedure, which followed whatever entries it found, accepted each of them.
+`TestAnchorsAreLiteralText` prints real handoffs whose page edges and long lines carry a tab, single and doubled backslashes, the document's own `\x09`, `|`, carriage returns and a no-break space, and compares them as defined above; it also shows that comparing the printed form would have stopped a faithful reader.
 The number of lines over 1024 characters is bounded (32); beyond that the plan is not established, the preview prints no token and the write step refuses (`start.unreadable`), so the owner can mark such an input as a reference instead of embedding it.
 
 What still depends on live reader behavior, and cannot be established offline:
 
-- that the reader tool's output for the probe is the output it gives for the handoff, which the probe samples at the lengths of the longest ordinary line, not at every line;
+- the size a single read or a single command output can return, which is not measured here: a long output can arrive cut, which the plan check detects for the plan, and a page of 200 lines has no byte limit, so a reader that returns fewer lines or characters than asked fails the page or the long line, after the bundle is written and after consent;
+- how the reader's tool normalises text: whether it shows tabs, carriage returns, trailing white space, non-ASCII and invisible characters as they are, and whether it counts characters or bytes or UTF-16 units, so that it could cut a non-ASCII ordinary line that the ASCII probe does not reveal;
+- that the tool's output for the probe is the output it gives for the handoff, which the probe samples at the lengths of the longest ordinary line, not at every line;
 - that it keeps its line numbers honest, and does not present blank or altered text for lines whose numbers, start and end still match (a limit of the check, shown in `test_what_the_procedure_cannot_see`);
 - that the file is not changed between the write and the read.
+
+A normalisation that makes an anchor differ, or a character the procedure will not guess at, stops the start safely, with the owner told which page or line it was; none of them can make the procedure pass on incomplete text.
 
 ## 2. The skill
 
@@ -200,5 +250,7 @@ Tracking: the repository's `.gitignore` un-ignores `.claude/` and then ignores e
 | Spaces and shell metacharacters in arguments and package text are never executed | `TestArgumentsAreData` |
 | Misuse of the token or options is a usage error | `TestUsage` |
 | The reading plan, probe and procedure detect skipped ranges, early ends, unread pages and cut lines | `TestReadingPlan`, `TestReadingProcedure` |
+| A plan that arrives cut, in the middle or at the end, or inconsistent with the confirmed preview, stops the procedure before any file is read | `TestPlanIsVerifiedFirst` |
+| Anchors are decoded from the `escape_text` notation and compared as literal text, including a backslash, a tab, a carriage return and a character the reader cannot observe | `TestAnchorsAreLiteralText` |
 | The skill is project scoped, owner invoked, pre-approves only the preview, names only real flags and states its boundaries and procedure | `TestSkill` |
 | Only the shipped skill is tracked under `.claude/` | `TestIgnoreBoundary` |

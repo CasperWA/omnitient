@@ -83,15 +83,63 @@ If it exits with any other nonzero status, report the diagnostic and stop; never
 
 On success the command has verified the bytes it stored, and says so.
 That is not evidence of what this session received.
-Establish that with the reading plan it printed, using only the Read tool on the handoff file and the reader probe file it names.
+Establish that with the reading plan the command printed, using only the Read tool on the handoff file and the reader probe file it names.
+Do the three parts in order: verify the plan (5.1), then know how anchors are compared (5.2), then read (5.3).
+
+### 5.1 Verify the plan before following it
+
+The plan is every line of the command's output from the `reading plan:` line to the end of the output.
+The output shown to you can itself be cut, in the middle or at the end, so check the plan before you read either file.
+Use only the lines as printed, and check all of these:
+
+1. There is exactly one `reading plan:` line, complete, of the form `reading plan: N lines in P pages of at most 200, K line(s) over 1024 characters`, and it is identical to the `reading plan:` line of the preview the owner confirmed.
+   A missing, repeated, different or `cannot be established` summary is a stop.
+2. There is exactly one `reader probe:` line naming a number M, followed by the probe lines 1 to M, each once and in that order.
+3. There are exactly P `page` entries, numbered 1 to P once each and in that order.
+   Page 1 starts at line 1, every other page starts on the line after the previous page ends, no page spans more than 200 lines, and page P ends at line N.
+4. There are exactly K `long line` entries, for K distinct line numbers between 1 and N, each longer than 1024 characters.
+5. Every line after the `reading plan:` line is one of those entries and is complete: it has its closing `|` and nothing is cut, repeated or unrecognised.
+6. Every anchor decodes as 5.2 says, and none names a character that 5.2 says to stop for.
+
+If any check fails, stop before reading either file and before any edit.
+Tell the owner which check failed and what is missing, for example that page 3 is absent or that the plan ends after long line 1 of 3.
+A plan that is cut stops here even if the handoff itself would have read completely.
+
+### 5.2 Compare anchors as literal text
+
+An anchor is between two `|` delimiters, and the delimiters are not part of it.
+The anchor itself may contain `|`: in a `page` entry the head ends at the one `|, last line ends |`, and every other anchor ends at the last `|` of its line.
+
+An anchor is the first or last 16 characters of a line of the document, counted as characters and not bytes, or the whole line when it is shorter.
+It is printed in the notation of Omnitient's `escape_text`, so it is not the text you will see: compare the decoded text, never the printed form.
+Decode it from left to right:
+
+- `\\` is one backslash.
+- `\xNN` (two lowercase hexadecimal digits), `\uNNNN` (four) and `\UNNNNNNNN` (eight) are the one character with that code point.
+- Every other character stands for itself, including `|`.
+- A backslash followed by anything else is ambiguous: stop.
+
+Because the decoding is left to right, the document's own text `\x09` is printed `\\x09` and decodes to a backslash followed by `x09`; only `\x09` alone is a tab.
+
+Compare the decoded head as the start, and the decoded tail as the end, of the line as the Read tool shows it, after its line number and with nothing trimmed or normalised by you.
+What can be observed:
+
+- A tab (`\x09`) is compared as a tab. A reader that shows it as spaces fails the check, which is a stop.
+- A carriage return (`\x0d`) is removed from the decoded anchor and from the shown line before comparing, because a reader may or may not show it.
+  So the check does not tell CRLF from LF.
+  The plan counts a line as ending at a line feed only; if the tool starts a new line at a carriage return, its lines are not the planned lines, a page's first or last line differs from the plan, and the check fails.
+- Any other `\x`, `\u` or `\U` escape names a control, space-like, formatting or unassigned character that a reader may show as nothing or as something else.
+  Do not guess: stop, and name the page or line and the code point.
+
+### 5.3 Read
 
 1. Read the whole probe file.
-   Probe lines 1 up to the number the plan names must each be shown whole: every one must end with exactly the marker the plan lists for it.
+   Probe lines 1 up to M must each be shown whole: every one must end with exactly the marker the plan lists for it.
    If one is cut, this reader cannot show lines of that length whole.
 2. Read each page of the handoff file in plan order, requesting exactly that page's line range and no other.
    For every page, the numbers of the lines shown must be exactly the page's range with none missing and none repeated, the first line must start with the plan's first-line text, and the last line must end with the plan's last-line text.
 3. For every long line the plan lists, the line with that number must end with the text the plan gives.
-4. Keep a record of the pages and checks done, and report it to the owner before any edit: the pages read, the probe lines shown whole, and the long lines checked.
+4. Keep a record of the checks done, and report it to the owner before any edit: that the plan was complete, the pages read, the probe lines shown whole, and the long lines checked.
 
 If any check fails, or you cannot complete a step, stop before any edit and tell the owner exactly what could not be read: which page or line number, and what was missing.
 Do not work from part of the handoff, and do not treat the final line number, the byte count or the SHA-256 as proof of what you read.
