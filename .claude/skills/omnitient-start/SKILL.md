@@ -94,11 +94,12 @@ Use only the lines as printed, and check all of these:
 
 1. There is exactly one `reading plan:` line, complete, of the form `reading plan: N lines in P pages of at most 200, K line(s) over 1024 characters`, and it is identical to the `reading plan:` line of the preview the owner confirmed.
    A missing, repeated, different or `cannot be established` summary is a stop.
-2. There is exactly one `reader probe:` line naming a number M, followed by the probe lines 1 to M, each once and in that order.
+2. There is exactly one `reader probe:` line, complete, of the form `reader probe: probe file lines 1 to M must each be shown whole`, followed by the probe lines 1 to M, each once and in that order.
+   The header has no anchor and no closing `|`; it must match that whole printed form, so a header cut anywhere, including before or inside M, is a stop.
 3. There are exactly P `page` entries, numbered 1 to P once each and in that order.
    Page 1 starts at line 1, every other page starts on the line after the previous page ends, no page spans more than 200 lines, and page P ends at line N.
 4. There are exactly K `long line` entries, for K distinct line numbers between 1 and N, each longer than 1024 characters.
-5. Every line after the `reading plan:` line is one of those entries and is complete: it has its closing `|` and nothing is cut, repeated or unrecognised.
+5. Every line after the `reading plan:` line is the `reader probe:` header or one of those entries, and is complete: each `probe line`, `page` and `long line` entry carries an anchor and has its closing `|`, and nothing is cut, repeated or unrecognised.
 6. Every anchor decodes as 5.2 says, and none names a character that 5.2 says to stop for.
 
 If any check fails, stop before reading either file and before any edit.

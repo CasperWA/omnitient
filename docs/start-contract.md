@@ -148,10 +148,10 @@ The plan is every output line from the `reading plan:` line to the end.
 Nothing is read, and so nothing is edited, unless all of these hold, using only the lines as printed:
 
 - exactly one `reading plan:` line, complete, as `reading plan: N lines in P pages of at most 200, K line(s) over 1024 characters`, identical to the `reading plan:` line of the preview the owner confirmed (a summary reading `cannot be established` is a stop);
-- exactly one `reader probe:` line naming M, then probe lines 1 to M, each once, in order;
+- exactly one `reader probe:` line, complete, as `reader probe: probe file lines 1 to M must each be shown whole` (it has no anchor and no closing `|`, and matches that whole printed form), then probe lines 1 to M, each once, in order;
 - exactly P page entries, numbered 1 to P once each, in order, with page 1 starting at line 1, every other page starting on the line after the previous one ends, no page over 200 lines, and page P ending at line N;
 - exactly K long-line entries, for K distinct line numbers within 1 to N, each longer than 1024 characters;
-- every line after the summary is one of those entries, complete with its closing `|`, so a cut, repeated or unrecognised line is a stop;
+- every line after the summary is the `reader probe:` header or one of those entries, and the entries that carry anchors (probe line, page and long line) are complete with their closing `|`, so a cut, repeated or unrecognised line is a stop;
 - every anchor decodes as below and names no character the reader cannot observe.
 
 The checks use only the counts the plan already prints, so the summary is the declaration the entries are held to, and the confirmed preview is where the summary was first shown.

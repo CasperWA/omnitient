@@ -1557,6 +1557,63 @@ class TestPlanIsVerifiedFirst:
             == []
         )
 
+    def test_a_valid_header_is_the_complete_printed_form(
+        self, delivered: Delivered
+    ) -> None:
+        header = self.plan_of(delivered)[1]
+        assert (
+            header == "reader probe: probe file lines 1 to 5 must each be shown whole"
+        )
+        assert PROBE_HEAD_SHAPE.fullmatch(header)
+        assert not header.endswith("|")
+
+    ANCHOR_CUTS: ClassVar[list[str]] = [
+        "header cut before M",
+        "header cut inside M",
+        "header cut at the end",
+        "header without its tail",
+        "probe entry without its closing delimiter",
+        "page entry without its closing delimiter",
+        "long line entry without its closing delimiter",
+    ]
+
+    @pytest.mark.parametrize("case", ANCHOR_CUTS)
+    def test_a_truncated_header_or_anchor_entry_stops(
+        self, delivered: Delivered, case: str
+    ) -> None:
+        plan = self.plan_of(delivered)
+        header = plan[1]
+        index = {
+            "probe": self.kind("  probe line ", plan)[0],
+            "page": self.kind("page ", plan)[0],
+            "long": self.kind("long line ", plan)[0],
+        }
+        edits = {
+            "header cut before M": (1, header[: header.index("1 to ") + 5]),
+            "header cut inside M": (1, header[: header.index(" must")] + " must"),
+            "header cut at the end": (1, header[:-1]),
+            "header without its tail": (1, header[: header.index(" must")]),
+            "probe entry without its closing delimiter": (
+                index["probe"],
+                plan[index["probe"]][:-1],
+            ),
+            "page entry without its closing delimiter": (
+                index["page"],
+                plan[index["page"]][:-1],
+            ),
+            "long line entry without its closing delimiter": (
+                index["long"],
+                plan[index["long"]][:-1],
+            ),
+        }
+        at, line = edits[case]
+        cut = "\n".join([*plan[:at], line, *plan[at + 1 :]]) + "\n"
+        reader = Reader()
+        problems = follow_procedure(delivered, reader, output=cut)
+        assert problems, case
+        assert all(p.startswith("plan:") for p in problems)
+        assert reader.calls == 0
+
     def test_loss_of_the_plan_is_independent_of_loss_in_the_handoff(
         self, delivered: Delivered
     ) -> None:
@@ -2086,7 +2143,10 @@ class TestSkill:
             "page P ends at line N",
             "exactly K `long line` entries",
             "K distinct line numbers between 1 and N",
-            "has its closing `|`",
+            "each `probe line`, `page` and `long line` entry carries an anchor and has its closing `|`",
+            "reader probe: probe file lines 1 to M must each be shown whole",
+            "The header has no anchor and no closing `|`",
+            "a header cut anywhere, including before or inside M, is a stop",
             "stop before reading either file and before any edit",
             "A plan that is cut stops here even if the handoff itself would have read completely",
         ):
