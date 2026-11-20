@@ -10,6 +10,8 @@ Every test uses temporary local Git repositories and no network.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import re
 import shlex
@@ -32,7 +34,7 @@ from omnitient.cli import main
 from omnitient.errors import OmnitientError
 from omnitient.model import Decision, WorkPackage
 from omnitient.serialize import content_digest
-from omnitient.store import read_bundle
+from omnitient.store import IncompleteBundleError, read_bundle
 
 Run = Callable[..., tuple[int, str, str]]
 Write = Callable[..., Path]
@@ -166,6 +168,10 @@ def prepare(
     return Prepare(run, write_package(ready), repo, work_tree)
 
 
+def out_of(prepare: Prepare) -> Path:
+    return prepare.tree.path.parent / "regular-out"
+
+
 def instruction_of(stdout: str) -> str:
     lines = stdout.splitlines()
     marker = next(i for i, line in enumerate(lines) if line.startswith("launch instr"))
@@ -214,7 +220,7 @@ class TestRegularTrack:
         instruction = instruction_of(stdout)
         assert instruction.startswith(f"Read the file {out}/review-request.md ")
         assert "\n" not in instruction
-        assert len(instruction) < 350
+        assert len(instruction) < 500
         assert "launched no session" in document
         assert SKILL not in document + stdout
 
@@ -387,7 +393,19 @@ class TestCodexTrack:
 
     def test_cleanliness_is_stated_as_not_observed(self, prepare: Prepare) -> None:
         _, stdout, _ = prepare("codex")
-        assert "work tree is clean is not observed here" in stdout
+        lines = stdout.splitlines()
+        observed = next(x for x in lines if x.startswith("observed at preparation: "))
+        assert "no replacement ref under refs/replace/" in observed
+        assert "clean" not in observed, "no claim about the work tree is made"
+        later = next(
+            x for x in lines if x.startswith("checked by the review controller")
+        )
+        assert "clean work tree" in later
+        assert "not here" in later
+        gap = next(x for x in lines if x.startswith("not established by"))
+        assert "replacement refs added after this preparation" in gap
+        _, regular, _ = prepare("regular", out=out_of(prepare))
+        assert "work tree is clean is not observed here" in regular
 
     def test_an_over_long_scope_is_refused_not_truncated(
         self,
@@ -1026,8 +1044,24 @@ def quiet_git_env() -> dict[str, str]:
     }
 
 
+def hostile_git_env(repo: Path) -> dict[str, str]:
+    """An environment that would redirect a plain Git command, ``PATH`` kept."""
+    return {
+        **quiet_git_env(),
+        "GIT_DIR": str(repo / "nowhere"),
+        "GIT_WORK_TREE": str(repo / "nowhere"),
+        "GIT_REPLACE_REF_BASE": "refs/other/",
+        "GIT_GRAFT_FILE": str(repo / "no-grafts"),
+        "GIT_CONFIG_COUNT": "1",
+        "GIT_CONFIG_KEY_0": "protocol.file.allow",
+        "GIT_CONFIG_VALUE_0": "always",
+        "GIT_EXTERNAL_DIFF": "false",
+    }
+
+
 def fake_git(directory: Path, body: str) -> Path:
     directory.mkdir(parents=True, exist_ok=True)
+    directory.chmod(0o755)  # not the umask's: a group-writable directory is untrusted
     program = directory / "git"
     program.write_text(f"#!/bin/sh\n{body}\n", encoding="utf-8")
     program.chmod(0o755)
@@ -1038,7 +1072,7 @@ class TestReaderKeepsTheSelectedComparison:
     """The regular file's Git commands hold the pinned interpretation when run."""
 
     def commands(self, document: str) -> list[list[str]]:
-        spans = re.findall(r"`(git -C [^`]+)`", document)
+        spans = re.findall(r"`(env -i [^`]+)`", document)
         assert len(spans) == 2
         return [shlex.split(span) for span in spans]
 
@@ -1048,13 +1082,16 @@ class TestReaderKeepsTheSelectedComparison:
         assert prepare("regular", out=out)[0] == 0
         document = (out / "review-request.md").read_text(encoding="utf-8")
         diff, show = self.commands(document)
+        git_program = str(gitref.trusted_git(work_tree.path))
         prefix = [
-            "git",
-            "-C",
-            str(work_tree.path),
-            "--no-replace-objects",
-            "--no-pager",
-        ]
+            "env", "-i",
+            *(f"{k}={v}" for k, v in review.PINNED_GIT_ENV),
+            f"PATH={Path(git_program).parent}",
+            git_program,
+            "--no-pager", "--no-replace-objects", "--no-optional-locks",
+            *(a for k, v in review.PINNED_GIT_CONFIG for a in ("-c", f"{k}={v}")),
+            "-C", str(work_tree.path),
+        ]  # fmt: skip
         assert diff == [
             *prefix, "diff", "--no-ext-diff", "--no-textconv",
             work_tree.base, work_tree.candidate,
@@ -1062,6 +1099,8 @@ class TestReaderKeepsTheSelectedComparison:
         assert show == [
             *prefix, "show", "--no-textconv", f"{work_tree.candidate}:PATH",
         ]  # fmt: skip
+        assert "GIT_NO_REPLACE_OBJECTS=1" in diff
+        assert "GIT_ALLOW_PROTOCOL=" in diff
 
     def test_run_from_elsewhere_with_a_replacement_ref_they_show_the_pinned_change(
         self, prepare: Prepare, out: Path, work_tree: Tree, tmp_path: Path
@@ -1076,7 +1115,7 @@ class TestReaderKeepsTheSelectedComparison:
         elsewhere.mkdir()
         shown = subprocess.run(
             diff, cwd=elsewhere, capture_output=True, text=True, check=True,
-            env=quiet_git_env(),
+            env=hostile_git_env(work_tree.path),
         )  # fmt: skip
         assert "b.txt" in shown.stdout
         assert "z.txt" not in shown.stdout
@@ -1087,7 +1126,8 @@ class TestReaderKeepsTheSelectedComparison:
         assert "z.txt" in plain.stdout, "a plain Git command would apply the ref"
         content = subprocess.run(
             [*show[:-1], f"{work_tree.candidate}:b.txt"], cwd=elsewhere,
-            capture_output=True, text=True, check=True, env=quiet_git_env(),
+            capture_output=True, text=True, check=True,
+            env=hostile_git_env(work_tree.path),
         )  # fmt: skip
         assert content.stdout == "two\n"
 
@@ -1101,7 +1141,7 @@ class TestReaderKeepsTheSelectedComparison:
         document = (out / "review-request.md").read_text(encoding="utf-8")
         assert f"-C '{moved}' " in document
         diff, _ = self.commands(document)
-        assert diff[2] == str(moved)
+        assert diff[diff.index("-C") + 1] == str(moved)
         done = subprocess.run(
             diff, capture_output=True, text=True, check=True, env=quiet_git_env()
         )
@@ -1125,7 +1165,7 @@ class TestReaderKeepsTheSelectedComparison:
     ) -> None:
         _, stdout, _ = prepare("codex")
         head = instruction_of(stdout)[len(SKILL) + 2 : -1].split(" | ")[0]
-        assert f"top directory is {work_tree.path}, the repository in which" in head
+        assert f"included: <{work_tree.path}>. That is the repository in which" in head
         assert "stop and report if the work tree of the session is another" in head
 
     def test_codex_is_refused_where_the_controller_would_apply_replacements(
@@ -1395,7 +1435,9 @@ class TestOutputNearGitMetadata:
 
 
 class TestDestinationIdentity:
-    def test_a_parent_swapped_for_a_link_into_the_repository_is_noticed(
+    """Creation, writes and cleanup concern the directory that was selected."""
+
+    def test_a_parent_swapped_for_a_link_into_the_repository_writes_nothing_there(
         self,
         prepare: Prepare,
         work_tree: Tree,
@@ -1418,9 +1460,56 @@ class TestDestinationIdentity:
         assert "review.out_changed" in err
         assert "launch instruction" not in stdout
         assert git(work_tree.path, "status", "--porcelain") == ""
-        assert not (
-            work_tree.path / "review-out"
-        ).exists(), "the stray directory is gone"
+        assert not (work_tree.path / "review-out").exists(), "nothing reached the link"
+        assert files_under(tmp_path / "holder-old") == [], (
+            "what was written went to the directory that was selected, and the "
+            "cleanup removed it from there"
+        )
+
+    def test_a_parent_that_is_in_the_repository_by_identity_is_refused(
+        self,
+        prepare: Prepare,
+        work_tree: Tree,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # The path check passes (as it would for a path replaced just before the
+        # parent is opened); the opened directory is what is compared.
+        monkeypatch.setattr(cli_module, "_in_repository", lambda *_: False)
+        for inside in (
+            work_tree.path / "review-out",
+            work_tree.path / ".git" / "review-out",
+            work_tree.path / "sub" / "review-out",
+        ):
+            inside.parent.mkdir(exist_ok=True)
+            code, stdout, err = prepare("regular", out=inside)
+            assert code == 1
+            assert "review.out_inside_repo" in err
+            assert "launch instruction" not in stdout
+            assert not inside.exists()
+
+    def test_a_replaced_file_is_not_removed_by_the_cleanup(
+        self,
+        prepare: Prepare,
+        out: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        real = cli_module._check_read_back
+
+        def intruder(dir_fd: int, *args: object) -> None:
+            name = out / "review-request.md"
+            name.unlink()
+            name.write_text("someone else's file", encoding="utf-8")
+            real(dir_fd, *args)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(cli_module, "_check_read_back", intruder)
+        code, stdout, err = prepare("regular", out=out)
+        assert code == 1
+        assert "output.conflict" in err
+        assert "launch instruction" not in stdout
+        assert files_under(out) == [
+            "review-request.md"
+        ], "only this command's file went"
+        assert (out / "review-request.md").read_text() == "someone else's file"
 
     def test_a_directory_replaced_while_it_was_written_gives_no_instruction(
         self,
@@ -1429,19 +1518,30 @@ class TestDestinationIdentity:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        real = cli_module._publish_handoff
+        real = cli_module._check_read_back
 
-        def replacing(directory: Path, *args: object, **kwargs: object) -> list[Path]:
-            written = real(directory, *args, **kwargs)  # type: ignore[arg-type]
-            directory.rename(tmp_path / "moved-away")
-            directory.mkdir()
-            return written
+        def replacing(dir_fd: int, *args: object) -> None:
+            real(dir_fd, *args)  # type: ignore[arg-type]
+            out.rename(tmp_path / "moved-away")
+            out.mkdir()
 
-        monkeypatch.setattr(cli_module, "_publish_handoff", replacing)
+        monkeypatch.setattr(cli_module, "_check_read_back", replacing)
         code, stdout, err = prepare("regular", out=out)
         assert code == 1
         assert "review.out_changed" in err
         assert "launch instruction" not in stdout
+        assert files_under(out) == [], "the new directory was not written to"
+        assert files_under(tmp_path / "moved-away") == [], "the bundle was withdrawn"
+
+    def test_a_directory_that_already_exists_is_never_entered(
+        self, prepare: Prepare, out: Path
+    ) -> None:
+        out.mkdir()
+        (out / "keep.txt").write_text("mine", encoding="utf-8")
+        code, _, err = prepare("regular", out=out)
+        assert code == 1
+        assert "review.out_exists" in err
+        assert files_under(out) == ["keep.txt"]
 
 
 class TestOutputPermissions:
@@ -1484,36 +1584,132 @@ class TestOutputPermissions:
         assert stat.S_IMODE((target / "handoff-review.md").stat().st_mode) == 0o644
 
 
-class TestPartialFileIsNotACompleteBundle:
-    @staticmethod
-    def complete(directory: Path, instruction: str) -> bool:
-        """What the printed instruction asks the reader to check."""
-        quoted = re.search(r'last line is not "([^"]+)"', instruction)
-        assert quoted
-        assert MANIFEST in instruction
-        lines = (directory / "review-request.md").read_text("utf-8").splitlines()
-        return (
-            bool(lines) and lines[-1] == quoted[1] and (directory / MANIFEST).exists()
-        )
+def reader_accepts(directory: Path, instruction: str) -> bool:
+    """A reader that follows the printed instruction and the file's first paragraph.
 
-    def test_the_instruction_tells_a_complete_bundle_from_a_partial_one(
+    It is written from the text of the paragraph, not from ``omnitient.store``,
+    so that it shows what a person or a model who obeys the words would do.
+    """
+    quoted = re.search(r'last line must be "([^"]+)"', instruction)
+    assert quoted, instruction
+    assert MANIFEST in instruction
+    request = directory / "review-request.md"
+    manifest = directory / MANIFEST
+    if not request.is_file() or not manifest.is_file():
+        return False
+    try:
+        data = json.loads(manifest.read_text("utf-8"))
+    except ValueError:
+        return False
+    outputs = data.get("outputs") if isinstance(data, dict) else None
+    version = data.get("schema_version") if isinstance(data, dict) else None
+    if not (
+        isinstance(data, dict)
+        and data.get("schema") == "omnitient/handoff-manifest"
+        and type(version) is int
+        and version == 1
+        and isinstance(outputs, dict)
+        and 1 <= len(outputs) <= 8
+        and all(n == Path(n).name and n not in {"", ".", ".."} for n in outputs)
+    ):
+        return False
+    for name, listed in outputs.items():
+        member = directory / name
+        if not member.is_file() or member.stat().st_size > 1_048_576:
+            return False
+        if hashlib.sha256(member.read_bytes()).hexdigest() != listed:
+            return False
+    if "review-request.md" not in outputs:
+        return False
+    lines = request.read_text("utf-8").splitlines()
+    return bool(lines) and lines[-1] == quoted[1]
+
+
+class TestPartialFileIsNotACompleteBundle:
+    def test_the_instruction_stays_short_and_names_the_reader_rule(
         self, prepare: Prepare, out: Path
     ) -> None:
         _, stdout, _ = prepare("regular", out=out)
         instruction = instruction_of(stdout)
-        assert "Stop and report if its last line is not" in instruction
-        assert self.complete(out, instruction)
-        full = (out / "review-request.md").read_bytes()
+        assert len(instruction) < 500
+        assert "SHA-256" in instruction
+        assert MANIFEST in instruction
+        assert "Stop and report if either check fails or cannot be made" in instruction
+        document = (out / "review-request.md").read_text(encoding="utf-8")
+        first = document.split("\n\n")[2]
+        assert first.startswith("**Verify this bundle before you trust the rest.**")
+        for phrase in (
+            "`omnitient/handoff-manifest`",
+            "integer 1",
+            "lists 1 to 8 plain file names",
+            "`review-request.md`",
+            "at most 1048576 bytes",
+            "SHA-256",
+            "64 lowercase hexadecimal digits",
+            "Files that are not listed are not part of the bundle",
+            "not what your tool presented to you",
+            "no proof that it is intact",
+        ):
+            assert phrase in first, phrase
+
+    def test_a_complete_bundle_passes_and_every_partial_or_altered_one_fails(
+        self, prepare: Prepare, out: Path
+    ) -> None:
+        _, stdout, _ = prepare("regular", out=out)
+        instruction = instruction_of(stdout)
+        assert reader_accepts(out, instruction)
+        assert read_bundle(out, MANIFEST), "the O1 reader rule agrees"
+        request = out / "review-request.md"
+        full = request.read_bytes()
         lines = full.splitlines(keepends=True)
         for cut in range(len(lines)):
-            (out / "review-request.md").write_bytes(b"".join(lines[:cut]))
-            assert not self.complete(out, instruction), f"cut after {cut} lines"
-        (out / "review-request.md").write_bytes(full[:-5])
-        assert not self.complete(out, instruction), "a cut inside the last line"
-        (out / "review-request.md").write_bytes(full)
-        assert self.complete(out, instruction)
+            request.write_bytes(b"".join(lines[:cut]))
+            assert not reader_accepts(out, instruction), f"cut after {cut} lines"
+        request.write_bytes(full[:-5])
+        assert not reader_accepts(out, instruction), "a cut inside the last line"
+        request.write_bytes(full)
+        assert reader_accepts(out, instruction)
+
+    def test_a_changed_middle_with_the_right_last_line_is_caught_by_the_digest(
+        self, prepare: Prepare, out: Path
+    ) -> None:
+        _, stdout, _ = prepare("regular", out=out)
+        instruction = instruction_of(stdout)
+        request = out / "review-request.md"
+        original = request.read_text(encoding="utf-8")
+        changed = original.replace("Build the thing.", "Build another thing.")
+        assert changed != original
+        assert changed.splitlines()[-1] == original.splitlines()[-1]
+        request.write_text(changed, encoding="utf-8")
+        assert not reader_accepts(out, instruction), "the footer alone would pass"
+        with pytest.raises(IncompleteBundleError, match="differs from the manifest"):
+            read_bundle(out, MANIFEST)
+
+    def test_a_missing_or_wrong_manifest_fails(
+        self, prepare: Prepare, out: Path
+    ) -> None:
+        _, stdout, _ = prepare("regular", out=out)
+        instruction = instruction_of(stdout)
+        good = (out / MANIFEST).read_text(encoding="utf-8")
+        listed = json.loads(good)
+        variants = {
+            "schema": {**listed, "schema": "other"},
+            "version is true": {**listed, "schema_version": True},
+            "version 2": {**listed, "schema_version": 2},
+            "no outputs": {**listed, "outputs": {}},
+            "request not listed": {**listed, "outputs": {"x.md": "0" * 64}},
+            "wrong digest": {**listed, "outputs": {"review-request.md": "0" * 64}},
+            "path in name": {**listed, "outputs": {"../review-request.md": "0" * 64}},
+        }
+        for label, data in variants.items():
+            (out / MANIFEST).write_text(json.dumps(data), encoding="utf-8")
+            assert not reader_accepts(out, instruction), label
+        (out / MANIFEST).write_text("{", encoding="utf-8")
+        assert not reader_accepts(out, instruction), "not JSON"
         (out / MANIFEST).unlink()
-        assert not self.complete(out, instruction), "no completion manifest yet"
+        assert not reader_accepts(out, instruction), "no completion manifest yet"
+        (out / MANIFEST).write_text(good, encoding="utf-8")
+        assert reader_accepts(out, instruction)
 
     def test_the_marker_is_the_last_line_and_appears_once(
         self, prepare: Prepare, out: Path, work_tree: Tree
@@ -1524,6 +1720,13 @@ class TestPartialFileIsNotACompleteBundle:
         assert text.splitlines()[-1] == marker
         assert text.count(marker) == 1
         assert text.endswith(marker + "\n")
+
+    def test_the_owner_is_shown_the_digest_the_reader_must_find(
+        self, prepare: Prepare, out: Path
+    ) -> None:
+        _, stdout, _ = prepare("regular", out=out)
+        digest = hashlib.sha256((out / "review-request.md").read_bytes()).hexdigest()
+        assert f"review request sha-256: {digest}" in stdout.splitlines()
 
 
 class TestNotesAreWithheldFromIndependentHandoffs:
@@ -1587,7 +1790,7 @@ class TestNotesAreWithheldFromIndependentHandoffs:
         assert "note: `advisory`" not in document
         assert "user:alice" in document, "records remain"
         assert "user:bob" in document
-        assert "the notes of approvals and execution recommendations" in document
+        assert "the notes of approvals and of execution recommendations" in document
         assert path.read_bytes() == before
         bundle = read_bundle(out, MANIFEST)
         assert bundle.manifest["content_digest"] == content_digest(noted)
@@ -1690,7 +1893,7 @@ class TestNormalEntryPoint:
         assert stat.S_IMODE(out.stat().st_mode) == 0o700
         codex = self.invoke(prepare, elsewhere, "--track", "codex")
         assert codex.returncode == 0, codex.stderr
-        assert f"top directory is {work_tree.path}" in codex.stdout
+        assert f"<{work_tree.path}>" in codex.stdout
         assert f"target ref the candidate commit {work_tree.candidate}" in codex.stdout
 
     def test_refusals_keep_their_codes_and_print_no_instruction(
@@ -1705,3 +1908,512 @@ class TestNormalEntryPoint:
         assert regular.returncode == 1
         assert "review.out_inside_repo" in regular.stderr
         assert not inside.exists()
+
+
+class TestTrustedProgramLocation:
+    """The program, its directory and every directory above them are the owner's."""
+
+    @staticmethod
+    def system_git() -> str:
+        found = shutil.which("git")
+        assert found
+        return found
+
+    def proxy(self, directory: Path) -> Path:
+        """A ``git`` that runs the real one, in a directory this test controls."""
+        return fake_git(directory, f'exec {self.system_git()} "$@"')
+
+    def refused(self, prepare: Prepare, entry: Path) -> str:
+        os.environ["PATH"] = str(entry)  # the monkeypatched copy of PATH
+        code, stdout, err = prepare("codex")
+        assert code == 1, stdout
+        assert "review.git_untrusted" in err
+        assert "launch instruction" not in stdout
+        return err
+
+    def test_a_group_writable_directory_is_skipped(
+        self, prepare: Prepare, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        marker = tmp_path / "group-ran"
+        fake_git(tmp_path / "group-bin", f"touch {marker}\nexit 97")
+        (tmp_path / "group-bin").chmod(0o775)
+        monkeypatch.setenv("PATH", str(tmp_path / "group-bin"))
+        assert "changeable by others" in self.refused(prepare, tmp_path / "group-bin")
+        assert not marker.exists()
+
+    def test_a_group_writable_program_is_skipped(
+        self, prepare: Prepare, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        program = self.proxy(tmp_path / "bin")
+        program.chmod(0o775)
+        monkeypatch.setenv("PATH", str(tmp_path / "bin"))
+        self.refused(prepare, tmp_path / "bin")
+
+    def test_a_directory_above_that_others_can_change_is_skipped(
+        self, prepare: Prepare, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        top = tmp_path / "top"
+        top.mkdir()
+        self.proxy(top / "inner" / "bin")
+        monkeypatch.setenv("PATH", str(top / "inner" / "bin"))
+        (top / "inner" / "bin").chmod(0o755)
+        (top / "inner").chmod(0o755)
+        top.chmod(0o777)
+        self.refused(prepare, top / "inner" / "bin")
+        top.chmod(0o775)
+        self.refused(prepare, top / "inner" / "bin")
+        top.chmod(0o755)
+        assert (
+            prepare("codex")[0] == 0
+        ), "the same program is fine once nothing above is open"
+
+    def test_a_sticky_directory_above_is_accepted(
+        self, prepare: Prepare, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        top = tmp_path / "sticky"
+        top.mkdir()
+        self.proxy(top / "bin")
+        top.chmod(0o1777)
+        monkeypatch.setenv("PATH", str(top / "bin"))
+        assert prepare("codex")[0] == 0
+
+    def test_a_link_in_a_directory_others_can_change_is_skipped(
+        self, prepare: Prepare, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        # The program is root's, but whoever can change the link's directory
+        # can point the name somewhere else.
+        shared = tmp_path / "links"
+        shared.mkdir()
+        (shared / "git").symlink_to(self.system_git())
+        shared.chmod(0o777)
+        monkeypatch.setenv("PATH", str(shared))
+        self.refused(prepare, shared)
+        shared.chmod(0o755)
+        assert prepare("codex")[0] == 0
+
+    def test_a_program_that_another_user_owns_is_skipped(
+        self, prepare: Prepare, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        self.proxy(tmp_path / "mine")
+        monkeypatch.setenv("PATH", str(tmp_path / "mine"))
+        assert prepare("codex")[0] == 0
+        me = os.getuid()
+        monkeypatch.setattr(
+            os, "getuid", lambda: me + 1
+        )  # the files are now someone else's
+        assert "changeable by others" in self.refused(prepare, tmp_path / "mine")
+        monkeypatch.setenv("PATH", f"{tmp_path / 'mine'}{os.pathsep}/usr/bin")
+        code, stdout, _ = prepare("codex")
+        assert code == 0
+        assert "git program: /usr/bin/git" in stdout, "root's own program is trusted"
+
+
+class TestTransportsCannotBeRelaxedByTheRepository:
+    """A protocol-specific setting beats ``protocol.allow``; the environment does not."""
+
+    def blobless_clone(self, tmp_path: Path, work_tree: Tree, name: str) -> Tree:
+        git(work_tree.path, "config", "uploadpack.allowFilter", "true")
+        git(work_tree.path, "config", "uploadpack.allowAnySHA1InWant", "true")
+        clone = tmp_path / name
+        git(
+            tmp_path, "clone", "-q", "--no-checkout", "--filter=blob:none",
+            f"file://{work_tree.path}", str(clone),
+        )  # fmt: skip
+        git(clone, "config", "protocol.file.allow", "always")
+        return Tree(clone, work_tree.base, work_tree.candidate, work_tree.tree)
+
+    def has_blob(self, tree: Tree) -> bool:
+        done = subprocess.run(
+            ["git", "-C", str(tree.path), "cat-file", "-e", f"{tree.candidate}:b.txt"],
+            capture_output=True, check=False,
+            env={**quiet_git_env(), "GIT_NO_LAZY_FETCH": "1", "GIT_ALLOW_PROTOCOL": ""},
+        )  # fmt: skip
+        return done.returncode == 0  # asking must not fetch either
+
+    def ask(
+        self, tree: Tree, *, environment: bool
+    ) -> subprocess.CompletedProcess[bytes]:
+        """``git cat-file`` of a blob the clone lacks, as Git's lazy fetch would be asked."""
+        env = gitref._environment(gitref.trusted_git(tree.path))
+        env.pop("GIT_NO_LAZY_FETCH")  # a Git before 2.44 does not know it
+        if not environment:
+            env.pop("GIT_ALLOW_PROTOCOL")
+        argv = [
+            str(gitref.trusted_git(tree.path)), "-c", "protocol.allow=never",
+            "-C", str(tree.path), "cat-file", "-p", f"{tree.candidate}:b.txt",
+        ]  # fmt: skip
+        return subprocess.run(argv, capture_output=True, env=env, check=False)
+
+    def test_protocol_allow_alone_is_overridden_by_a_protocol_specific_setting(
+        self, work_tree: Tree, tmp_path: Path
+    ) -> None:
+        clone = self.blobless_clone(tmp_path, work_tree, "control")
+        assert not self.has_blob(clone)
+        done = self.ask(clone, environment=False)
+        assert done.returncode == 0, "the control: the repository's setting wins"
+        assert self.has_blob(clone), "and the object was fetched"
+
+    def test_the_environment_restriction_cannot_be_relaxed(
+        self, work_tree: Tree, tmp_path: Path
+    ) -> None:
+        clone = self.blobless_clone(tmp_path, work_tree, "guarded")
+        done = self.ask(clone, environment=True)
+        assert done.returncode != 0
+        assert b"not allowed" in done.stderr
+        assert not self.has_blob(clone), "nothing was fetched"
+
+    def test_preparation_refuses_the_ref_and_fetches_nothing(
+        self, prepare: Prepare, work_tree: Tree, tmp_path: Path, out: Path
+    ) -> None:
+        clone = self.blobless_clone(tmp_path, work_tree, "prepared")
+        remote_only = commit(work_tree.path, "c.txt", "three\n")
+        (clone.path / ".git" / "refs" / "heads" / "remote-only").write_text(
+            f"{remote_only}\n", encoding="utf-8"
+        )
+        code, _, err = with_tree(prepare, clone)(
+            "regular", out=out, base="origin/main", candidate="remote-only"
+        )
+        assert code == 1
+        assert "review.ref_unresolved" in err
+        probe = subprocess.run(
+            ["git", "-C", str(clone.path), "cat-file", "-e", remote_only],
+            capture_output=True, check=False,
+            env={**quiet_git_env(), "GIT_NO_LAZY_FETCH": "1", "GIT_ALLOW_PROTOCOL": ""},
+        )  # fmt: skip
+        assert probe.returncode != 0, "the commit was not fetched"
+
+    def test_the_readers_command_fails_instead_of_fetching(
+        self, prepare: Prepare, work_tree: Tree, tmp_path: Path, out: Path
+    ) -> None:
+        clone = self.blobless_clone(tmp_path, work_tree, "reader")
+        code, _, err = with_tree(prepare, clone)(
+            "regular", out=out, base="origin/main", candidate="origin/feature"
+        )
+        assert code == 0, err
+        document = (out / "review-request.md").read_text(encoding="utf-8")
+        diff = shlex.split(re.findall(r"`(env -i [^`]+)`", document)[0])
+        assert not self.has_blob(clone)
+        done = subprocess.run(
+            diff, capture_output=True, env=hostile_git_env(clone.path), check=False
+        )
+        assert done.returncode != 0, "a missing blob is an error for the reader"
+        assert not self.has_blob(clone), "and nothing was fetched"
+        assert "If Git reports a missing object, stop and report that" in document
+        plain = subprocess.run(
+            ["git", "-C", str(clone.path), "diff", clone.base, clone.candidate],
+            capture_output=True, env=quiet_git_env(), check=False,
+        )  # fmt: skip
+        assert plain.returncode == 0, "a plain command works"
+        assert self.has_blob(clone), "because it fetches"
+
+
+class TestReaderRunsInItsOwnEnvironment:
+    def test_the_reader_command_ignores_what_would_redirect_a_plain_one(
+        self, prepare: Prepare, out: Path, work_tree: Tree, tmp_path: Path
+    ) -> None:
+        other = make_repo(tmp_path / "other")
+        git(work_tree.path, "replace", "--force", work_tree.candidate, other.base)
+        assert prepare("regular", out=out)[0] == 0
+        document = (out / "review-request.md").read_text(encoding="utf-8")
+        diff, show = (
+            shlex.split(span) for span in re.findall(r"`(env -i [^`]+)`", document)
+        )
+        env = {**hostile_git_env(work_tree.path), "GIT_DIR": str(other.path / ".git")}
+        for argv, expected in ((diff, work_tree.candidate), (show[:-1], None)):
+            if expected is not None:
+                done = subprocess.run(
+                    argv,
+                    cwd=tmp_path,
+                    capture_output=True,
+                    text=True,
+                    env=env,
+                    check=True,
+                )
+                assert "b.txt" in done.stdout
+                assert "a.txt" not in done.stdout
+        plain = subprocess.run(
+            ["git", "diff", work_tree.base, work_tree.candidate], cwd=tmp_path,
+            capture_output=True, text=True, env=env, check=False,
+        )  # fmt: skip
+        assert "b.txt" not in plain.stdout, "the same environment redirects a plain Git"
+
+    def test_the_commands_name_the_program_that_resolved_the_ids(
+        self, prepare: Prepare, out: Path
+    ) -> None:
+        assert prepare("regular", out=out)[0] == 0
+        facts = read_bundle(out, MANIFEST).manifest["review"]
+        document = (out / "review-request.md").read_text(encoding="utf-8")
+        assert (
+            f" {facts['git_executable']} --no-pager --no-replace-objects " in document
+        )
+        assert f"PATH={Path(facts['git_executable']).parent} " in document
+
+
+class TestSignificantWhitespaceInPaths:
+    def test_a_git_directory_name_with_trailing_space_is_the_one_protected(
+        self, prepare: Prepare, tmp_path: Path
+    ) -> None:
+        meta = tmp_path / "meta"
+        decoy = meta / "repo.git"
+        decoy.mkdir(parents=True)
+        spaced = meta / "repo.git "
+        tree = make_repo(tmp_path / "spaced", separate_git_dir=spaced)
+        comparison = gitref.resolve(tree.path, "main", "feature", "exact")
+        assert spaced.resolve() in comparison.git_dirs, comparison.git_dirs
+        assert decoy.resolve() not in comparison.git_dirs
+        target = spaced / "review-out"
+        code, _, err = with_tree(prepare, tree)("regular", out=target, base="main")
+        assert code == 1
+        assert "review.out_inside_repo" in err
+        assert not target.exists()
+        assert files_under(decoy) == []
+
+    def test_a_leading_space_is_kept_too(self, tmp_path: Path) -> None:
+        spaced = tmp_path / " lead.git"
+        tree = make_repo(tmp_path / "lead", separate_git_dir=spaced)
+        comparison = gitref.resolve(tree.path, "main", "feature", "exact")
+        assert spaced.resolve() in comparison.git_dirs
+
+    def test_a_path_that_git_does_not_decode_as_text_is_kept_exactly(
+        self, tmp_path: Path
+    ) -> None:
+        odd = tmp_path / os.fsdecode(b"bytes-\xff.git")
+        try:
+            tree = make_repo(tmp_path / "odd", separate_git_dir=odd)
+        except (OSError, subprocess.CalledProcessError):
+            pytest.skip("the file system does not take this name")
+        comparison = gitref.resolve(tree.path, "main", "feature", "exact")
+        assert odd.resolve() in comparison.git_dirs
+
+    def test_the_codex_path_is_delimited_and_decodes_to_the_repository(
+        self, prepare: Prepare, work_tree: Tree, tmp_path: Path
+    ) -> None:
+        for name in ("my proj ", " lead", "a\\b|c", "ünï"):
+            moved = tmp_path / name
+            shutil.move(work_tree.path, moved)
+            tree = replace(work_tree, path=moved)
+            code, stdout, err = with_tree(prepare, tree)("codex")
+            assert code == 0, err
+            head = instruction_of(stdout)[len(SKILL) + 2 : -1].split(" | ")[0]
+            opening = head.index("<", head.index("less-than sign"))
+            closing = head.index(">", opening)
+            assert decode(head[opening + 1 : closing]) == str(moved), name
+            assert head.index("Escape notation") < head.index("less-than sign")
+            assert "backslash x NN" in head[: head.index("less-than sign")]
+            assert head.count("<") == 1
+            assert head.count(">") == 1
+            shutil.move(moved, work_tree.path)
+
+    def test_a_space_edged_repository_is_one_word_for_the_regular_reader(
+        self, prepare: Prepare, work_tree: Tree, tmp_path: Path, out: Path
+    ) -> None:
+        moved = tmp_path / "edge "
+        shutil.move(work_tree.path, moved)
+        tree = replace(work_tree, path=moved)
+        assert with_tree(prepare, tree)("regular", out=out)[0] == 0
+        document = (out / "review-request.md").read_text(encoding="utf-8")
+        diff = shlex.split(re.findall(r"`(env -i [^`]+)`", document)[0])
+        assert diff[diff.index("-C") + 1] == f"{moved}"
+        done = subprocess.run(
+            diff, capture_output=True, text=True, env=quiet_git_env(), check=True
+        )
+        assert "b.txt" in done.stdout
+
+
+class TestOutputPermissionsUnderRestrictiveUmasks:
+    @pytest.mark.parametrize("mask", [0o077, 0o277, 0o377, 0o777, 0o000])
+    def test_the_modes_are_exact_whatever_the_umask(
+        self, prepare: Prepare, tmp_path: Path, mask: int
+    ) -> None:
+        parent = tmp_path / "shared"
+        parent.mkdir()
+        parent.chmod(0o755)
+        old = os.umask(mask)
+        try:
+            code, _, err = prepare("regular", out=parent / "review-1")
+        finally:
+            os.umask(old)
+        assert code == 0, err
+        target = parent / "review-1"
+        assert stat.S_IMODE(target.stat().st_mode) == 0o700
+        for name in ("review-request.md", MANIFEST):
+            assert stat.S_IMODE((target / name).stat().st_mode) == 0o600
+        assert read_bundle(target, MANIFEST), "the owner can read and verify it"
+
+    def test_the_command_line_entry_does_the_same(
+        self, prepare: Prepare, out: Path, tmp_path: Path
+    ) -> None:
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        done = subprocess.run(
+            [
+                sys.executable, "-m", "omnitient", "review", "prepare",
+                "--root", f"repo={prepare.context}", "--repo", str(prepare.tree.path),
+                "--base", "main", "--candidate", "feature", "--track", "regular",
+                "--out", str(out), "--", str(prepare.pkg_file),
+            ],
+            cwd=elsewhere, capture_output=True, text=True, check=False, timeout=60,
+            preexec_fn=lambda: os.umask(0o277),
+        )  # fmt: skip
+        assert done.returncode == 0, done.stderr
+        assert stat.S_IMODE(out.stat().st_mode) == 0o700
+        assert stat.S_IMODE((out / "review-request.md").stat().st_mode) == 0o600
+
+    def test_other_users_get_nothing_but_the_owner_can_share_by_arranging_access(
+        self, prepare: Prepare, out: Path
+    ) -> None:
+        prepare("regular", out=out)
+        assert stat.S_IMODE(out.stat().st_mode) & 0o077 == 0
+        document = Path(__file__).parent.parent / "docs" / "review-handoff-contract.md"
+        text = document.read_text(encoding="utf-8")
+        assert "whatever the umask" in text
+        assert "the owner arranges access" in text
+
+
+class TestCodexBoundaryAtReviewTime:
+    def test_the_instruction_asks_for_the_controllers_own_record(
+        self, prepare: Prepare
+    ) -> None:
+        _, stdout, _ = prepare("codex")
+        head = instruction_of(stdout)[len(SKILL) + 2 : -1].split(" | ")[0]
+        for phrase in (
+            "After the import and before any review phase",
+            (
+                "its review target must be the candidate commit above and its base "
+                "the base commit above with base mode exact"
+            ),
+            "it must record no uncommitted changes at import",
+            (
+                "its accepted spec must show the criteria completely and without a "
+                "truncation notice"
+            ),
+            "Otherwise stop and report",
+        ):
+            assert phrase in head, phrase
+        assert not re.search(r"[`$;'\"\n\r\t]", head)
+        assert "|" not in head
+
+    def test_preparation_lines_separate_what_was_seen_from_what_is_checked_later(
+        self, prepare: Prepare, work_tree: Tree
+    ) -> None:
+        code, stdout, _ = prepare("codex")
+        assert code == 0
+        lines = stdout.splitlines()
+        seen, later, neither = (
+            next(x for x in lines if x.startswith(prefix))
+            for prefix in (
+                "observed at preparation: ",
+                "checked by the review controller when the review runs, not here: ",
+                "not established by this preparation or by the controller: ",
+            )
+        )
+        assert work_tree.candidate in seen
+        assert "no graft file" in seen
+        assert "clean work tree" in later
+        assert "import" in later
+        assert "do not" not in seen
+        assert "which the controller does not detect or switch off" in neither
+        assert "regular track" in neither
+
+    def test_a_trailing_space_in_the_criteria_is_written_out(
+        self, ready: WorkPackage, work_tree: Tree
+    ) -> None:
+        pkg = replace(ready, decisions=(), acceptance=("ends with spaces  ",))
+        comparison = gitref.resolve(work_tree.path, "main", "feature", "exact")
+        text = review.codex_instruction(pkg, content_digest(pkg), comparison)
+        body = text[len(SKILL) + 2 : -1]
+        assert not body.endswith(" ")
+        assert body.endswith("acceptance 1: ends with spaces\\x20\\x20")
+        assert decode(body.split(" | ")[-1]) == "acceptance 1: ends with spaces  "
+
+
+class TestIndependenceWording:
+    def test_the_file_names_the_three_withheld_fields_and_what_can_remain(
+        self, prepare: Prepare, out: Path
+    ) -> None:
+        prepare("regular", out=out)
+        text = (out / "review-request.md").read_text(encoding="utf-8")
+        flat = " ".join(text.split())
+        assert "three free-text fields are withheld" in flat
+        for field in (
+            "summaries of evidence entries",
+            "notes of approvals and of execution recommendations",
+        ):
+            assert field in flat
+        assert (
+            "objective, scope, exclusions, acceptance criteria, decisions with "
+            "their rationale, context files, titles and evidence references"
+        ) in flat
+        assert "can still contain such text" in flat
+        assert "no earlier reviewer's verdict" not in flat, "no over-claim"
+        assert "do not open it or anything an evidence reference names" in flat
+        assert "nothing here enforces it" in flat
+
+    def test_approved_content_that_names_a_verdict_is_still_carried(
+        self,
+        run: Run,
+        write_package: Write,
+        ready: WorkPackage,
+        repo: Path,
+        work_tree: Tree,
+        out: Path,
+    ) -> None:
+        said = "A previous reviewer already passed this"
+        pkg = review_approved(
+            replace(
+                ready,
+                approvals=(),
+                objective=f"Objective. {said}",
+                decisions=(
+                    Decision(
+                        "D1", "Q?", "resolved", "user:alice", "review",
+                        rationale=f"Rationale. {said}", answer="Yes",
+                    ),
+                ),
+            )
+        )  # fmt: skip
+        prepare = Prepare(run, write_package(pkg, "carried"), repo, work_tree)
+        assert prepare("regular", out=out)[0] == 0
+        text = (out / "review-request.md").read_text(encoding="utf-8")
+        assert text.count(said) == 2, "approved content is not filtered"
+        assert VERDICT not in text, "the withheld summary is"
+        manifest = read_bundle(out, MANIFEST).manifest
+        assert manifest["package_file"], "the manifest still names the package file"
+
+
+class TestBundleAtDescriptor:
+    def test_the_descriptor_reader_applies_the_same_rule(self, tmp_path: Path) -> None:
+        from omnitient import store
+
+        directory = tmp_path / "bundle"
+        directory.mkdir()
+        files = {"a.md": b"alpha\n"}
+        manifest = json.dumps(
+            {
+                "schema": store.MANIFEST_SCHEMA,
+                "schema_version": 1,
+                "outputs": {"a.md": hashlib.sha256(b"alpha\n").hexdigest()},
+            }
+        ).encode()
+        fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            created = store.publish_bundle_in(
+                fd, files, ("m.meta.json", manifest), mode=0o600
+            )
+            assert [n for n, _ in created] == ["a.md", "m.meta.json"]
+            assert store.read_bundle_in(fd, "m.meta.json").files == files
+            assert store.read_bundle(directory, "m.meta.json").files == files
+            (directory / "a.md").write_bytes(b"changed\n")
+            with pytest.raises(IncompleteBundleError, match="differs"):
+                store.read_bundle_in(fd, "m.meta.json")
+            (directory / "a.md").unlink()
+            (directory / "a.md").symlink_to("m.meta.json")
+            with pytest.raises(IncompleteBundleError, match="regular file"):
+                store.read_bundle_in(fd, "m.meta.json")
+            with pytest.raises(OmnitientError, match="already exists"):
+                store.publish_bundle_in(
+                    fd, files, ("m.meta.json", manifest), mode=0o600
+                )
+            assert (directory / "a.md").is_symlink(), "the existing name is left alone"
+        finally:
+            os.close(fd)

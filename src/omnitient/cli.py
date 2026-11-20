@@ -13,7 +13,7 @@ import json
 import os
 import re
 import sys
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from importlib import resources
@@ -60,13 +60,19 @@ from omnitient.serialize import content_digest, dumps, sha256_hex
 from omnitient.store import (
     MANIFEST_SCHEMA,
     MANIFEST_SCHEMA_VERSION,
+    DestinationChangedError,
     IncompleteBundleError,
     LoadedPackage,
     create_package,
+    create_private_directory,
+    discard_in,
     load_package,
     package_path,
     publish_bundle,
+    publish_bundle_in,
     read_bundle,
+    read_bundle_in,
+    remove_directory,
     update_package,
 )
 
@@ -334,6 +340,34 @@ def cmd_show(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _handoff_manifest(
+    stage: HandoffStage,
+    outputs: Mapping[str, bytes],
+    handoff: render.Handoff,
+    assessed: Assessment | StartInputs,
+    extra: Mapping[str, object] | None,
+) -> bytes:
+    """The completion manifest of o1-contract.md section 8.4, as bytes."""
+    loaded = assessed.loaded
+    meta = {
+        "schema": MANIFEST_SCHEMA,
+        "schema_version": MANIFEST_SCHEMA_VERSION,
+        "generated_at": ops.timestamp(_now()),
+        "omnitient_version": __version__,
+        "package_file": str(loaded.path.resolve()),
+        "package_file_sha256": loaded.file_sha256,
+        "target_stage": stage,
+        "status": handoff.status,
+        "content_digest": handoff.digest,
+        "host_roots": {
+            name: str(path) for name, path in sorted(assessed.mapping.roots.items())
+        },
+        "outputs": {name: sha256_hex(data) for name, data in outputs.items()},
+        **(extra or {}),
+    }
+    return (_json(meta) + "\n").encode("utf-8")
+
+
 def _publish_handoff(
     directory: Path,
     stage: HandoffStage,
@@ -351,24 +385,8 @@ def _publish_handoff(
     docs/o1-contract.md section 8.4, so a caller that reports success has a
     bundle whose files match their recorded SHA-256.
     """
-    loaded = assessed.loaded
     manifest_name = f"handoff-{stage}.meta.json"
-    meta = {
-        "schema": MANIFEST_SCHEMA,
-        "schema_version": MANIFEST_SCHEMA_VERSION,
-        "generated_at": ops.timestamp(_now()),
-        "omnitient_version": __version__,
-        "package_file": str(loaded.path.resolve()),
-        "package_file_sha256": loaded.file_sha256,
-        "target_stage": stage,
-        "status": handoff.status,
-        "content_digest": handoff.digest,
-        "host_roots": {
-            name: str(path) for name, path in sorted(assessed.mapping.roots.items())
-        },
-        "outputs": {name: sha256_hex(data) for name, data in outputs.items()},
-        **(extra or {}),
-    }
+    manifest_data = _handoff_manifest(stage, outputs, handoff, assessed, extra)
     try:
         directory.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
@@ -376,7 +394,6 @@ def _publish_handoff(
             "output.unwritable",
             f"cannot create {directory}: {exc.strerror}",
         ) from exc
-    manifest_data = (_json(meta) + "\n").encode("utf-8")
     publish_bundle(
         directory,
         outputs,
@@ -719,6 +736,7 @@ def _changed(names: list[str]) -> OmnitientError:
 
 
 _FileId = tuple[int, int]
+_ANCESTOR_LIMIT = 4096
 
 
 def _file_id(path: Path) -> _FileId:
@@ -726,31 +744,78 @@ def _file_id(path: Path) -> _FileId:
     return info.st_dev, info.st_ino
 
 
-def _review_destination(
-    arg: Path, comparison: review.Comparison
-) -> tuple[Path, _FileId]:
+def _chain_ids(fd: int) -> list[_FileId]:
+    """The identity of the directory ``fd`` holds and of each directory above it.
+
+    The walk goes through ``..`` from the open directory, so it describes what
+    the descriptor is and not what any path to it names now.
+    """
+    ids: list[_FileId] = []
+    current = os.dup(fd)
+    try:
+        for _ in range(_ANCESTOR_LIMIT):
+            info = os.fstat(current)
+            ids.append((info.st_dev, info.st_ino))
+            above = os.open(
+                "..", os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC, dir_fd=current
+            )
+            os.close(current)
+            current = above
+            top = os.fstat(above)
+            if (top.st_dev, top.st_ino) == ids[-1]:
+                break
+        else:
+            raise OSError("the directory has too many parents")
+    finally:
+        os.close(current)
+    return ids
+
+
+@dataclass
+class _Destination:
+    """The selected new directory: its path, its name, and its parent held open.
+
+    Everything that is created or removed afterwards is done relative to the
+    open parent, so it concerns the directory that was selected and examined,
+    not whatever the path comes to name later.
+    """
+
+    path: Path
+    name: str
+    parent_fd: int
+    parent_id: _FileId
+
+    def close(self) -> None:
+        os.close(self.parent_fd)
+
+
+def _outside_repository(message: str) -> OmnitientError:
+    return refusal(
+        "review.out_inside_repo",
+        message + "; name a directory outside them with --out",
+    )
+
+
+def _review_destination(arg: Path, comparison: review.Comparison) -> _Destination:
     """The new directory for the regular track's file, resolved and checked.
 
-    Also the identity of its parent, so that a parent that is replaced before
-    the directory is created (for example by a link into the repository) is
-    noticed.
+    The parent is opened, and its identity and that of every directory above it
+    are compared with the repository's, so that the check is of the directory
+    that will be written into.
     """
     try:
         path = arg.resolve()
         exists = os.path.lexists(path)
         parent_ok = path.parent.is_dir()
-        parent_id = _file_id(path.parent) if parent_ok else (0, 0)
     except (OSError, RuntimeError) as exc:
         raise refusal(
             "review.out", f"cannot resolve the output directory: {exc}"
         ) from exc
     if _in_repository(path, comparison):
-        raise refusal(
-            "review.out_inside_repo",
+        raise _outside_repository(
             "the output directory is inside the repository or its Git directory "
             "(which can lie outside the work tree, for a linked work tree or a "
-            "separate Git directory), where it would change the repository; name "
-            "a directory outside them with --out",
+            "separate Git directory), where it would change the repository"
         )
     if exists:
         raise refusal(
@@ -758,7 +823,7 @@ def _review_destination(
             "the output directory already exists, and an existing file or "
             "directory is never reused; name a new directory with --out",
         )
-    if not parent_ok:
+    if not parent_ok or not path.name:
         raise refusal(
             "review.out_parent",
             "the output directory has no existing parent directory, and none is "
@@ -772,7 +837,27 @@ def _review_destination(
             "use a directory whose absolute path has only letters, digits and "
             "._+=@:,/- after the leading slash",
         )
-    return path, parent_id
+    try:
+        parent_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    except OSError as exc:
+        raise refusal(
+            "review.out", f"cannot open the output directory's parent: {exc.strerror}"
+        ) from exc
+    try:
+        ids = _chain_ids(parent_fd)
+        info = os.fstat(parent_fd)
+    except OSError as exc:
+        os.close(parent_fd)
+        raise refusal(
+            "review.out", f"cannot examine the output directory's parent: {exc}"
+        ) from exc
+    if set(ids) & set(comparison.protected_ids):
+        os.close(parent_fd)
+        raise _outside_repository(
+            "the output directory's parent is, or lies inside, the repository or "
+            "its Git directory"
+        )
+    return _Destination(path, path.name, parent_fd, (info.st_dev, info.st_ino))
 
 
 def _in_repository(path: Path, comparison: review.Comparison) -> bool:
@@ -792,71 +877,90 @@ def _destination_changed(detail: str) -> OmnitientError:
 
 
 def _publish_for_review(
-    out: Path,
-    parent_id: _FileId,
+    destination: _Destination,
     comparison: review.Comparison,
     outputs: dict[str, bytes],
     handoff: render.Handoff,
     assessed: Assessment,
     extra: Mapping[str, object],
 ) -> list[Path]:
-    """Create ``out`` (it must be new) and publish into it; leave nothing half-claimed.
+    """Create the new directory and publish into it; leave nothing half-claimed.
 
-    The directory is private to its owner (0700) and so are its files (0600): it
-    holds package content and a host path, and its parent may be shared.
+    The directory, every file in it and every removal are made relative to the
+    parent that was opened and checked, so they concern that directory even if
+    the path is changed meanwhile. The directory has the bits 0o700 and the
+    files 0o600 whatever the umask: they hold package content and a host path,
+    and the parent may be shared. A name that is replaced by someone with the
+    command's own rights between a check and a removal is not covered.
     """
+    manifest_name = f"handoff-{review.REVIEW_STAGE}.meta.json"
+    manifest_data = _handoff_manifest(
+        review.REVIEW_STAGE, outputs, handoff, assessed, extra
+    )
     try:
-        out.mkdir(mode=0o700)
+        dir_fd, made = create_private_directory(destination.parent_fd, destination.name)
     except FileExistsError as exc:
         raise refusal(
             "review.out_exists",
             "the output directory already exists, and an existing file or "
             "directory is never reused; name a new directory with --out",
         ) from exc
+    except DestinationChangedError as exc:
+        raise _destination_changed("it is not the directory that was created") from exc
     except OSError as exc:
         raise refusal(
             "review.out_unwritable",
             f"cannot create the output directory: {exc.strerror}",
         ) from exc
+    created: list[tuple[str, _FileId]] = []
     try:
-        made = _file_id(out)
-        where = out.resolve(strict=True)
-        moved = (
-            where != out
-            or _file_id(out.parent) != parent_id
-            or _in_repository(where, comparison)
-        )
-    except OSError as exc:
-        moved = True
-        made = (0, 0)
-        where = out
-        del exc
-    if moved:
-        with contextlib.suppress(OSError):
-            out.rmdir()  # the empty directory this command just made
-        raise _destination_changed("its parent is no longer the one that was checked")
-    try:
-        written = _publish_handoff(
-            out,
-            review.REVIEW_STAGE,
-            outputs,
-            handoff,
-            assessed,
-            force=False,
-            extra=extra,
-            mode=0o600,
-        )
-    except OmnitientError:
-        with contextlib.suppress(OSError):
-            out.rmdir()  # only if empty: nothing that was written is removed
+        try:
+            if set(_chain_ids(dir_fd)) & set(comparison.protected_ids):
+                raise _destination_changed("it is inside the repository")
+            created = publish_bundle_in(
+                dir_fd, outputs, (manifest_name, manifest_data), mode=0o600
+            )
+            _check_read_back(dir_fd, manifest_name, outputs, manifest_data, destination)
+            if _file_id(destination.path) != made or (
+                _file_id(destination.path.parent) != destination.parent_id
+            ):
+                raise _destination_changed(
+                    "the path no longer names the directory written"
+                )
+        except OSError as exc:
+            raise _destination_changed(str(exc)) from exc
+    except BaseException:
+        discard_in(dir_fd, created)
+        remove_directory(destination.parent_fd, destination.name, made)
         raise
+    finally:
+        os.close(dir_fd)
+    return [destination.path / name for name in (*outputs, manifest_name)]
+
+
+def _check_read_back(
+    dir_fd: int,
+    manifest_name: str,
+    outputs: Mapping[str, bytes],
+    manifest_data: bytes,
+    destination: _Destination,
+) -> None:
+    """The bundle just written, read back under the reader rule, is this command's."""
     try:
-        unchanged = out.resolve(strict=True) == where and _file_id(out) == made
-    except OSError:
-        unchanged = False
-    if not unchanged:
-        raise _destination_changed("it is no longer the directory that was written")
-    return written
+        bundle = read_bundle_in(dir_fd, manifest_name)
+    except IncompleteBundleError as exc:
+        raise refusal(
+            "output.conflict",
+            f"the bundle in {destination.path} does not verify after writing, so "
+            f"another writer probably interfered: {exc}. Re-run the command.",
+        ) from exc
+    if bundle.files != outputs or bundle.manifest != json.loads(manifest_data):
+        raise refusal(
+            "output.conflict",
+            f"the bundle in {destination.path} verifies, but it is another writer's, "
+            "which replaced this command's output after it was written. "
+            "Re-run the command if you need this output.",
+        )
 
 
 def cmd_review_prepare(args: argparse.Namespace) -> int:
@@ -882,7 +986,11 @@ def cmd_review_prepare(args: argparse.Namespace) -> int:
     )
     report = assessed.reports[review.REVIEW_STAGE]
 
-    def show(withheld: Sequence[str], request_file: Path | None = None) -> None:
+    def show(
+        withheld: Sequence[str],
+        request_file: Path | None = None,
+        request_sha256: str | None = None,
+    ) -> None:
         for line in review.preparation_lines(
             pkg,
             digest,
@@ -890,6 +998,7 @@ def cmd_review_prepare(args: argparse.Namespace) -> int:
             comparison,
             track,
             request_file=request_file,
+            request_sha256=request_sha256,
             withheld=withheld,
         ):
             _out(escape_text(line))
@@ -927,7 +1036,24 @@ def cmd_review_prepare(args: argparse.Namespace) -> int:
         _out(instruction)
         return EXIT_OK
 
-    directory, parent_id = _review_destination(args.out, comparison)
+    destination = _review_destination(args.out, comparison)
+    try:
+        return _prepare_regular(
+            destination, comparison, view, handoff, assessed, digest, show
+        )
+    finally:
+        destination.close()
+
+
+def _prepare_regular(
+    destination: _Destination,
+    comparison: review.Comparison,
+    view: WorkPackage,
+    handoff: render.Handoff,
+    assessed: Assessment,
+    digest: str,
+    show: Callable[..., None],
+) -> int:
     markdown = render.render_format(handoff, "md").decode("utf-8")
     document = review.regular_document(markdown, view, digest, comparison).encode(
         "utf-8"
@@ -941,7 +1067,7 @@ def cmd_review_prepare(args: argparse.Namespace) -> int:
         )
     extra = {
         "review": {
-            "track": track,
+            "track": "regular",
             "repository": str(comparison.repo),
             "base_commit": comparison.base,
             "candidate_commit": comparison.candidate,
@@ -954,15 +1080,14 @@ def cmd_review_prepare(args: argparse.Namespace) -> int:
         }
     }
     written = _publish_for_review(
-        directory,
-        parent_id,
+        destination,
         comparison,
         {review.REQUEST_FILE: document},
         handoff,
         assessed,
         extra,
     )
-    show([], written[0])
+    show([], written[0], sha256_hex(document))
     _out("launch instruction (for a fresh read-only review session):")
     _out(review.regular_instruction(written[0], comparison))
     return EXIT_OK

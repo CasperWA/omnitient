@@ -11,15 +11,18 @@ full object ids; it never fetches, never writes to the repository and never
 runs a hook, a pager or a configured helper that these questions could reach.
 
 The hardening is deliberate and limited. The Git program is looked up only in
-absolute ``PATH`` entries outside the repository that others cannot write to.
-Global and system configuration are switched off, replacement refs cannot change
-what an id means, optional locks and lazy fetching are off, every transport is
-refused so that a missing object is never fetched even by a Git too old to know
-``GIT_NO_LAZY_FETCH``, and the verbs are a fixed allowlist of ``version``,
-``rev-parse``, ``symbolic-ref``, ``merge-base`` and ``for-each-ref``. The
-repository's own ``.git/config`` still applies, so this is not a defence against
-a repository a hostile party prepared. Nothing here looks at the working tree,
-so whether it is clean is not observed.
+absolute ``PATH`` entries outside the repository, and only a program whose own
+location (the entry, the program and every directory above them) only the owner
+and root can change is used. Global and system configuration are switched off,
+replacement refs cannot change what an id means, optional locks and lazy
+fetching are off, every transport is refused, by ``GIT_ALLOW_PROTOCOL`` as well
+as ``protocol.allow``, so that a missing object is never fetched, even by a Git
+too old to know ``GIT_NO_LAZY_FETCH`` and whatever the repository's own
+``protocol.<name>.allow`` says, and the verbs are a fixed allowlist of
+``version``, ``rev-parse``, ``symbolic-ref``, ``merge-base`` and
+``for-each-ref``. The repository's own ``.git/config`` still applies, so this is
+not a defence against a repository a hostile party prepared. Nothing here looks
+at the working tree, so whether it is clean is not observed.
 """
 
 from __future__ import annotations
@@ -31,7 +34,7 @@ import subprocess  # nosec B404 - fixed argument vectors, never a shell
 from pathlib import Path
 
 from omnitient.errors import refusal
-from omnitient.review import Basis, Comparison
+from omnitient.review import PINNED_GIT_CONFIG, PINNED_GIT_ENV, Basis, Comparison
 
 _ID = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
 _TIMEOUT_SECONDS = 30
@@ -77,26 +80,40 @@ def _inside(path: Path, top: Path) -> bool:
     return path == top or top in path.parents
 
 
-def _trusted_location(path: Path) -> bool:
-    """Whether only the owner or root can change ``path`` (a file or a directory)."""
-    try:
-        info = path.stat()
-    except OSError:
-        return False
-    if info.st_mode & stat.S_IWOTH:
-        return False
+def _trusted_chain(path: Path) -> bool:
+    """Whether only the owner and root can change ``path`` or put another in its place.
+
+    ``path`` is a resolved path. It and every directory above it must belong to
+    root or to the current user and be writable by neither group nor others. A
+    sticky directory (``/tmp``) is accepted although others can write to it,
+    because they cannot rename or remove an entry they do not own, and every
+    entry on the way is checked to be owned by root or the user. Access control
+    lists and a process that runs as the owner are not considered.
+    """
     getuid = getattr(os, "getuid", None)
-    return getuid is None or info.st_uid in (0, getuid())
+    for item in (path, *path.parents):
+        try:
+            info = item.stat()
+        except OSError:
+            return False
+        if getuid is not None and info.st_uid not in (0, getuid()):
+            return False
+        if info.st_mode & (stat.S_IWGRP | stat.S_IWOTH) and not (
+            stat.S_ISDIR(info.st_mode) and info.st_mode & stat.S_ISVTX
+        ):
+            return False
+    return True
 
 
 def trusted_git(repo: Path) -> Path:
     """The Git program to run: the first acceptable ``git`` on the caller's ``PATH``.
 
     A ``PATH`` entry that is empty or relative (it would mean the current
-    directory), that lies inside the repository, or whose directory or program
-    others can write to, is skipped, so a program planted in the work tree or
-    in a shared directory is never started. The program is used by its real
-    path. Nothing is looked up anywhere else.
+    directory), that lies inside the repository, or whose program, directory or
+    any directory above them others can change (:func:`_trusted_chain`), is
+    skipped, so a program planted in the work tree or in a shared directory is
+    never started. The program is used by its real path. Nothing is looked up
+    anywhere else.
     """
     skipped: list[str] = []
     for entry in os.environ.get("PATH", "").split(os.pathsep):
@@ -111,8 +128,8 @@ def trusted_git(repo: Path) -> Path:
             continue
         if _inside(real, repo) or _inside(folder, repo):
             skipped.append("inside the repository")
-        elif not (_trusted_location(real) and _trusted_location(real.parent)):
-            skipped.append("writable by others")
+        elif not (_trusted_chain(real) and _trusted_chain(folder)):
+            skipped.append("changeable by others")
         else:
             return real
     if skipped:
@@ -120,8 +137,9 @@ def trusted_git(repo: Path) -> Path:
             "review.git_untrusted",
             "every git program on PATH is "
             + " or ".join(sorted(set(skipped)))
-            + "; put a git that only you and root can change in an absolute PATH "
-            "directory outside the repository",
+            + "; put a git that only you and root can change, in a directory that "
+            "only you and root can change and whose parents only you and root can "
+            "change, in an absolute PATH entry outside the repository",
         )
     raise refusal(
         "review.git_missing",
@@ -132,18 +150,12 @@ def trusted_git(repo: Path) -> Path:
 
 def _environment(executable: Path) -> dict[str, str]:
     # Only the Git program's own directory: Git finds its helpers there and a
-    # PATH entry of the caller cannot add one.
-    env = {"LC_ALL": "C", "PATH": str(executable.parent)}
-    env.update(
-        GIT_CONFIG_GLOBAL=os.devnull,
-        GIT_CONFIG_NOSYSTEM="1",
-        GIT_ATTR_NOSYSTEM="1",
-        GIT_OPTIONAL_LOCKS="0",
-        GIT_NO_LAZY_FETCH="1",
-        GIT_TERMINAL_PROMPT="0",
-        GIT_NO_REPLACE_OBJECTS="1",
-    )
-    return env
+    # PATH entry of the caller cannot add one. Nothing else is inherited.
+    return {**dict(PINNED_GIT_ENV), "PATH": str(executable.parent)}
+
+
+def _text(data: bytes) -> str:
+    return data.decode("utf-8", errors="replace")
 
 
 class _Git:
@@ -152,27 +164,22 @@ class _Git:
             str(executable),
             "--no-optional-locks",
             "--no-replace-objects",
-            "-c",
-            "core.fsmonitor=false",
-            "-c",
-            f"core.hooksPath={os.devnull}",
-            "-c",
-            "protocol.allow=never",
-            "-c",
-            "core.warnAmbiguousRefs=true",
+            *(arg for k, v in PINNED_GIT_CONFIG for arg in ("-c", f"{k}={v}")),
             "-C",
             str(repo),
         ]
         self._env = _environment(executable)
 
     def run(self, *args: str) -> tuple[int, str, str]:
+        code, out, err = self.run_bytes(*args)
+        return code, _text(out), _text(err)
+
+    def run_bytes(self, *args: str) -> tuple[int, bytes, bytes]:
+        """The exit status and the exact output: bytes, so that no path is altered."""
         try:
             done = subprocess.run(  # nosec B603 - allowlisted verbs
                 [*self._base, *args],
                 capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
                 timeout=_TIMEOUT_SECONDS,
                 check=False,
                 stdin=subprocess.DEVNULL,
@@ -234,12 +241,16 @@ class _Git:
         return int(match[1]), int(match[2]), out.strip()
 
     def directory(self, flag: str, root: Path) -> Path:
-        code, out, err = self.run("rev-parse", flag)
-        text = out.strip()
+        # A path's leading and trailing spaces are part of it: only the one
+        # newline that ends the line is removed, and the bytes are decoded as
+        # the file system names them.
+        code, out, err = self.run_bytes("rev-parse", flag)
+        text = os.fsdecode(out.removesuffix(b"\n"))
         if code != 0 or not text:
             raise refusal(
                 "review.git_failed",
-                f"Git did not name its directory ({err.strip() or 'no reason given'})",
+                "Git did not name its directory "
+                f"({_text(err).strip() or 'no reason given'})",
             )
         try:
             return (root / text).resolve(strict=True)
@@ -247,6 +258,19 @@ class _Git:
             raise refusal(
                 "review.git_failed", f"cannot resolve the Git directory: {exc}"
             ) from exc
+
+
+def _identities(paths: tuple[Path, ...]) -> tuple[tuple[int, int], ...]:
+    ids: list[tuple[int, int]] = []
+    for path in paths:
+        try:
+            info = path.stat()
+        except OSError as exc:
+            raise refusal(
+                "review.git_failed", f"cannot examine the repository: {exc.strerror}"
+            ) from exc
+        ids.append((info.st_dev, info.st_ino))
+    return tuple(dict.fromkeys(ids))
 
 
 def resolve(repo: Path, base: str, candidate: str, basis: Basis) -> Comparison:
@@ -285,7 +309,7 @@ def resolve(repo: Path, base: str, candidate: str, basis: Basis) -> Comparison:
     if out.strip() != "true":
         raise refusal("review.repo", "the directory is not inside a Git work tree")
     code, out, _ = git.run("rev-parse", "--show-prefix")
-    if code != 0 or out.strip():
+    if code != 0 or out != "\n":
         raise refusal(
             "review.repo",
             "the directory is inside a work tree but is not its top; name the "
@@ -358,7 +382,7 @@ def resolve(repo: Path, base: str, candidate: str, basis: Basis) -> Comparison:
     code, out, _ = git.run("rev-parse", "--verify", "--quiet", "HEAD^{commit}")
     head = out.strip() if code == 0 and _ID.fullmatch(out.strip()) else None
     code, out, _ = git.run("symbolic-ref", "--quiet", "HEAD")
-    ref = out.strip()
+    ref = out.removesuffix("\n")
     branch = ref.removeprefix(_REF_PREFIX) if code == 0 and ref else None
     return Comparison(
         repo=root,
@@ -376,4 +400,5 @@ def resolve(repo: Path, base: str, candidate: str, basis: Basis) -> Comparison:
         git_version=version,
         git_dirs=git_dirs,
         has_replacements=bool(listed.strip()),
+        protected_ids=_identities((root, *git_dirs)),
     )
