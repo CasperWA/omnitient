@@ -498,6 +498,7 @@ class StartInputs:
     checkout: start.Checkout
     destination: start.Destination | None
     digest: str
+    git: tuple[start.GitObservation, start.CommitPlan] | None = None
 
 
 def _destination(
@@ -526,6 +527,29 @@ def _destination(
     return start.Destination(path, problem)
 
 
+def _mode_usage(args: argparse.Namespace) -> str | None:
+    """What is wrong with the mode options, if anything (a usage error)."""
+    if args.mode == "commit":
+        missing = [
+            flag
+            for flag, value in (("--base", args.base), ("--branch", args.branch))
+            if value is None
+        ]
+        if missing:
+            return f"--mode commit needs {' and '.join(missing)}"
+    elif args.base is not None or args.branch is not None:
+        return "--base and --branch belong to --mode commit"
+    return None
+
+
+def _observe_git(
+    args: argparse.Namespace, checkout: start.Checkout, roots: Mapping[str, Path]
+) -> tuple[start.GitObservation, start.CommitPlan]:
+    """Ask Git, read-only, where a commit would land; the answer is not acted on here."""
+    observed = gitref.observe_checkout(checkout.path, args.base, args.branch)
+    return observed, start.plan_commit(observed, roots)
+
+
 def _start_inputs(args: argparse.Namespace) -> StartInputs:
     loaded = load_package(args.package)
     mapping = _mapping(args, loaded.package)
@@ -536,6 +560,7 @@ def _start_inputs(args: argparse.Namespace) -> StartInputs:
         checkout,
         _destination(args.out, checkout),
         content_digest(loaded.package),
+        _observe_git(args, checkout, mapping.roots) if args.mode == "commit" else None,
     )
 
 
@@ -550,6 +575,7 @@ def _facts(
         checkout=inputs.checkout,
         destination=destination.path,
         document=document,
+        git=start.git_facts(*inputs.git) if inputs.git else None,
     )
 
 
@@ -565,6 +591,16 @@ def _start_preview_lines(
         if plan is not None
         else []
     )
+    git_lines = None
+    if inputs.git is not None:
+        observed, commit_plan = inputs.git
+        withheld = [*withheld, *commit_plan.problems]
+        git_lines = start.commit_lines(
+            observed,
+            commit_plan,
+            inputs.digest,
+            branch_ref=f"refs/heads/{observed.branch_name}",
+        )
     facts = (
         _facts(inputs, inputs.destination, document)
         if inputs.destination is not None and document is not None
@@ -584,10 +620,15 @@ def _start_preview_lines(
         plan=plan,
         token=facts.token if facts is not None else None,
         withheld=withheld,
+        git_lines=git_lines,
     )
 
 
 def cmd_start_preview(args: argparse.Namespace) -> int:
+    usage = _mode_usage(args)
+    if usage:
+        _err(f"omnitient start preview: error: {usage}")
+        return EXIT_USAGE
     inputs = _start_inputs(args)
     resolved = resolve_context(inputs.loaded.package, inputs.mapping)
     handoff = render.build_handoff(inputs.loaded.package, resolved, start.START_STAGE)
@@ -657,6 +698,17 @@ def cmd_start_handoff(args: argparse.Namespace) -> int:
     except ValueError as exc:
         _err(f"omnitient start handoff: error: --expect-preview: {exc}")
         return EXIT_USAGE
+    usage = _mode_usage(args)
+    if usage is None and shown.commit_mode != (args.mode == "commit"):
+        usage = (
+            "--expect-preview is a commit-mode token; pass --mode commit"
+            if shown.commit_mode
+            else "--expect-preview is not a commit-mode token, so --mode commit "
+            "cannot start from it"
+        )
+    if usage:
+        _err(f"omnitient start handoff: error: {usage}")
+        return EXIT_USAGE
 
     inputs = _start_inputs(args)
     if not inputs.checkout.is_working_directory:
@@ -670,9 +722,18 @@ def cmd_start_handoff(args: argparse.Namespace) -> int:
     destination = inputs.destination
     if destination is None:  # the parser requires --out; this is a safeguard
         raise refusal("start.out", "no handoff directory was given with --out")
+    # In commit mode these include the Git facts: a branch, HEAD, status or base that
+    # moved since the preview is a material change, found before any context is read.
     changed = _facts(inputs, destination, None).changed_from(shown, early_only=True)
     if changed:
         raise _changed(changed)
+    if inputs.git is not None and inputs.git[1].problems:
+        raise refusal(
+            "start.git_unusable",
+            "the checkout cannot take a commit-mode start: "
+            + "; ".join(inputs.git[1].problems)
+            + ". Nothing was written; show the owner a new preview.",
+        )
     if destination.problem:
         code = (
             "start.out_inside_checkout"
@@ -721,8 +782,72 @@ def cmd_start_handoff(args: argparse.Namespace) -> int:
         "stored bytes verified against the manifest; what a reader's tool "
         "presents is not verified by this command"
     )
+    if inputs.git is not None:
+        # Before the reading plan: the plan is every line from 'reading plan:' on.
+        observed, commit_plan = inputs.git
+        _out(
+            f"git commit mode confirmed: base commit {observed.base}, branch "
+            f"{escape_text(observed.branch_name)}, branch action {commit_plan.action}; "
+            "no Git write has been made"
+        )
+        _out(
+            "git writes are the session's: read the handoff completely, then run "
+            "'omnitient start git-check' immediately before the first Git write"
+        )
     for line in start.plan_lines(plan):
         _out(line)
+    return EXIT_OK
+
+
+def cmd_start_git_check(args: argparse.Namespace) -> int:
+    """Read-only recheck, immediately before the first Git write of commit mode."""
+    try:
+        shown = start.parse_token(args.expect_preview)
+    except ValueError as exc:
+        _err(f"omnitient start git-check: error: --expect-preview: {exc}")
+        return EXIT_USAGE
+    if not shown.commit_mode:
+        _err(
+            "omnitient start git-check: error: --expect-preview is not a "
+            "commit-mode token"
+        )
+        return EXIT_USAGE
+    checkout = _resolve_checkout(args.checkout)
+    if not checkout.is_working_directory:
+        raise refusal(
+            "start.checkout_not_cwd",
+            "the target checkout is not this command's working directory, so no "
+            "Git write may follow from here",
+        )
+    observed = gitref.observe_checkout(checkout.path, args.base, args.branch)
+    # The mapped roots are not known here; they were part of the confirmed facts,
+    # and a root overlap is a function of Git facts compared below.
+    commit_plan = start.plan_commit(observed)
+    values = list(shown.values)
+    values[4:6] = start.checkout_ids(checkout)
+    values[len(start.FACT_NAMES) :] = start.git_facts(observed, commit_plan)
+    changed = start.Facts(tuple(values)).changed_from(shown, early_only=True)
+    if changed:
+        raise _changed(changed)
+    if commit_plan.problems:
+        raise refusal(
+            "start.git_unusable",
+            "the checkout cannot take a commit-mode start: "
+            + "; ".join(commit_plan.problems)
+            + ". No Git write was made; show the owner a new preview.",
+        )
+    _out("omnitient start: git preconditions unchanged since the preview")
+    _out(f"git work tree: {escape_text(str(checkout.path))}")
+    _out(f"observed HEAD: {observed.head}")
+    _out(f"git base commit: {observed.base}")
+    _out(
+        f"feature branch: refs/heads/{escape_text(observed.branch_name)}, "
+        f"branch action {commit_plan.action}"
+    )
+    _out(
+        "the checkout is clean; the first authorized Git write may follow now. "
+        "this command made none, and it is valid only until that write"
+    )
     return EXIT_OK
 
 
@@ -1624,9 +1749,27 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="DIR",
         help="target checkout (default: the current directory)",
     )
+    modes = argparse.ArgumentParser(add_help=False)
+    modes.add_argument(
+        "--mode",
+        choices=start.MODES,
+        default="edit",
+        help="edit (default): implement without any Git write; commit: also observe "
+        "the checkout's Git state and authorize one local commit on a feature branch",
+    )
+    modes.add_argument(
+        "--base",
+        metavar="REF",
+        help="--mode commit: the Git base, resolved once to a full commit id",
+    )
+    modes.add_argument(
+        "--branch",
+        metavar="NAME",
+        help="--mode commit: the local feature branch the commit lands on",
+    )
     p = start_sub.add_parser(
         "preview",
-        parents=[host, target],
+        parents=[host, target, modes],
         help="read-only preview of package, revision, target and write scope",
     )
     p.add_argument(
@@ -1640,7 +1783,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_start_preview)
     p = start_sub.add_parser(
         "handoff",
-        parents=[host, target],
+        parents=[host, target, modes],
         help="after the owner approved the preview, write the verified handoff",
     )
     p.add_argument(
@@ -1658,6 +1801,31 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _escape_usage_errors(p)
     p.set_defaults(func=cmd_start_handoff)
+    p = start_sub.add_parser(
+        "git-check",
+        help="read-only recheck of the confirmed Git facts, immediately before the "
+        "first Git write of --mode commit",
+    )
+    p.add_argument(
+        "--checkout",
+        type=Path,
+        metavar="DIR",
+        help="target checkout (default: the current directory)",
+    )
+    p.add_argument(
+        "--base", required=True, metavar="REF", help="the confirmed Git base"
+    )
+    p.add_argument(
+        "--branch", required=True, metavar="NAME", help="the confirmed feature branch"
+    )
+    p.add_argument(
+        "--expect-preview",
+        required=True,
+        metavar="TOKEN",
+        help="the commit-mode preview token the owner confirmed",
+    )
+    _escape_usage_errors(p)
+    p.set_defaults(func=cmd_start_git_check)
 
     p = sub.add_parser(
         "review", help="prepare a handoff for one independent review (launches none)"

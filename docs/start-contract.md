@@ -12,6 +12,11 @@ Status: implemented.
 They add no readiness rule: readiness, context handling and the handoff are those of [o1-contract.md](o1-contract.md), and `start` calls the same code as `render`.
 Nothing here records an approval, writes a package or runs an agent.
 
+There are two modes.
+The edit mode (`--mode edit`, the default) is sections 1 to 3: the session edits the target checkout and makes no Git write, and nothing in it changed.
+The commit mode (`--mode commit`) is section 4: it also observes the checkout's Git state, and the session lands the work as one local commit on a feature branch.
+Omnitient never performs a Git write in either mode.
+
 ## 1. The commands
 
 ```bash
@@ -53,7 +58,8 @@ The session's permissions and any sandbox decide what can actually be written.
 
 **What is checked about the checkout.**
 Its resolved path, its directory identity, and whether a `.git` entry exists.
-The branch, HEAD and local modifications are not observed, and there is no dirty-tree gate.
+In the edit mode the branch, HEAD and local modifications are not observed, and there is no dirty-tree gate.
+The commit mode observes them (section 4).
 
 **The checkout and the roots.**
 The target and the context roots may legitimately differ; a mapped root that is not the target is information, never a refusal.
@@ -230,12 +236,113 @@ Tracking: the repository's `.gitignore` un-ignores `.claude/` and then ignores e
 ## 3. Not covered, and not verified
 
 - Delivery status (O3) is not in the preview; delivery records stay independent of readiness.
-- The branch, HEAD and local modifications of the checkout are not observed.
+- In the edit mode the branch, HEAD and local modifications of the checkout are not observed.
 - A second checkout is not isolated by anything here.
 - Not exercised in a live session, because that needs a model: that `/omnitient-start` loads and substitutes its arguments, that the owner is asked and a denial stops the model, how `Bash(omnitient start preview *)` matches commands with pipes or redirections, whether a permission prompt appears for `start handoff` or an edit, that a session's Bash tool starts in its working directory, the reader tool's actual line and page behavior, and whether device and inode numbers are stable on every filesystem (an unstable one would show as a false `start.changed`).
 - The static tests establish only what the skill's text says and that the commands behave as above; the reading tests use a simulated reader.
 
-## 4. Acceptance
+## 4. Commit mode
+
+```bash
+omnitient start preview --mode commit '--base=REF' '--branch=NAME' [the options of section 1] -- PACKAGE
+omnitient start handoff --mode commit '--base=REF' '--branch=NAME' [the options of section 1] --expect-preview TOKEN --out DIR -- PACKAGE
+omnitient start git-check [--checkout DIR] '--base=REF' '--branch=NAME' --expect-preview TOKEN
+```
+
+The commit mode answers one question before the owner consents: where will my commit land, from what base, and what am I authorizing?
+`--base` and `--branch` are required with `--mode commit` and refused without it (usage error, exit 2); the attached `--base=REF` form keeps a value that begins with a dash from being read as an option.
+A token and the mode it was printed for must agree: a commit-mode token to `handoff` without `--mode commit`, or the reverse, is a usage error, and `git-check` takes only a commit-mode token.
+
+### 4.1 What the preview observes
+
+Read-only Git questions about the target, asked once through `gitref.py`, the only module that starts another program.
+They run with optional locks, hooks and the file system monitor switched off, so asking never rewrites the index and never runs a hook.
+The target must be the top directory of a Git work tree.
+
+| Line | Content |
+| --- | --- |
+| `git work tree` | the resolved checkout |
+| `observed branch`, `observed HEAD` | the checked-out local branch (or detached) and the full commit ID |
+| `staged changes`, `unstaged changes`, `untracked files`, `unmerged paths` | `none`, or the count and the first five paths, escaped |
+| `git operation in progress` | a merge, cherry-pick, revert, rebase, bisect or sequencer, or `none` |
+| `package revision` | the content digest of the package, marked as not a Git object |
+| `git base ref`, `git base commit` | the ref as the owner wrote it, and the full commit ID it resolved to once, marked as a Git commit and not the revision; the commit must exist locally, because nothing is fetched |
+| `feature branch`, `feature branch state` | `refs/heads/NAME`, and whether it does not exist, points at the base, or points elsewhere |
+| `proposed branch action` | `create`, `switch`, `stay` or `none` |
+| `tracked files change when the branch is entered` | whether HEAD's tree differs from the base's |
+| the numbered operations and `not authorized` | section 4.2 |
+
+The package revision and the Git base are two lines with two meanings.
+Neither identifies the other, and neither enters the other's fingerprint.
+
+### 4.2 The operation set
+
+A go-ahead in the commit mode authorizes exactly these, in this order, and the preview prints them:
+
+1. The branch action: `create` makes the local branch `NAME` at the full base commit and switches to it; `switch` switches to the existing `NAME`, which already points at the base; `stay` changes nothing because `NAME` is checked out and points at the base.
+2. Staging by explicit path of only the files the package scope needs, and inspection of the staged diff.
+3. Running the checks, formatters and hooks; when they fail or rewrite files, inspecting what changed, repairing in-scope failures, rerunning the affected checks on the resulting content and restaging only the intended paths, repeating with hooks enabled.
+4. Exactly one local commit with hooks enabled: no `--no-verify`, no amend, no second commit.
+
+Not authorized: a push, fetch, pull request or publication; a merge, rebase, reset, stash, tag, amend or force; deleting, moving or switching to another branch; changing Git configuration; bypassing a hook; a commit in another repository; recording an approval; and anything that would disturb work that is not this package's.
+For an unrelated failure, a denied operation or a change that would disturb someone else's work, the session reports the exact blocker and the state it kept, and stops.
+A routine hook rewrite is not such a case: it is step 3.
+
+### 4.3 When the start is withheld
+
+A ready preview prints `git commit mode: WITHHELD`, one `no usable handoff token` line per reason and no token when any of these hold; the exit status is 0, as for any informational preview.
+
+- The checkout is dirty: staged, unstaged or untracked paths (ignored files are not counted), or unmerged paths.
+- A Git operation is in progress, or HEAD names no commit.
+- Git cannot be asked: the target is not a work tree, is not its top directory, or no trusted Git program is available.
+- The base is unresolved: it is empty, begins with a dash, holds a control character, is ambiguous, or names no commit that exists locally.
+- The branch is unusable: Git rejects the name, it collides with an existing branch (`a` and `a/b`), a tag has the same name, it is checked out in another work tree, or it exists and points anywhere but at the base.
+- Entering the branch would replace tracked files (HEAD's tree is not the base's) while a mapped root is, contains or lies inside the checkout, because the handoff embeds files that are about to change.
+
+A stale local `main` is not one of them: the base can be a commit that is not HEAD, and the branch is created at the base.
+Nothing is repaired: the preview does not clean, stash, switch or fetch.
+A blocked package prints the Git lines too, and no token.
+
+### 4.4 Binding and drift
+
+A commit-mode token is `omnitient-start-3.` followed by the eight values of section 1.2 and three more, so its tag and its length tell it from an edit-mode token:
+
+| Fact | Fingerprint of |
+| --- | --- |
+| checkout git state | the work tree, the observed branch, HEAD and HEAD's tree, every staged, unstaged, untracked and unmerged path, the operation in progress, the commit the feature branch points at, and any problem with it |
+| git base commit | the base ref as written, the commit ID and tree it resolved to, and any problem |
+| branch and operations | the operation-set version, the branch name, the branch action, the base commit and the exact text of the operations and of `not authorized` |
+
+`start handoff` recomputes all eleven.
+The eight facts of section 1.3 are handled as before, and a change in a Git fact is `start.changed`, naming it, before any context file is read and with nothing written.
+It then refuses with `start.git_unusable` if the recomputed state is not startable, which a matching token cannot normally be.
+After `handoff delivered` it prints, before `reading plan:` so that the plan stays every line from there to the end, a `git commit mode confirmed` line and a statement that no Git write has been made.
+
+`start git-check` is the recheck immediately before the first Git write.
+It needs no package: it observes the target again, compares the target's location and identity and the three Git facts with the token, and prints `git preconditions unchanged since the preview`, or fails with `start.changed` (exit 1, no Git write has been made), `start.git_unusable`, or `start.checkout_not_cwd` for a target that is not the working directory.
+It only reads, and it is valid only until the first Git write: the branch action itself changes the facts it compares.
+Preview, `handoff` and `git-check` never write to the repository; the session does.
+
+### 4.5 The skill in commit mode
+
+The owner adds `--mode commit --base REF --branch NAME` to the arguments of `/omnitient-start`.
+The skill passes them on in the attached, single-quoted form, shows the `git commit mode` lines as printed, stops on a withheld preview without cleaning the checkout or choosing another base or branch, and asks the owner the question above for exactly what was displayed.
+After the reading procedure of section 1.4 it runs `start git-check`, takes the displayed branch action naming the full base commit, verifies HEAD and the branch, implements, stages by explicit path, repairs and reruns around hook rewrites with hooks enabled, makes exactly one local commit, and verifies the result from Git.
+Its success report must carry these provenance fields, each in full: the resolved checkout path, the feature branch, the full base SHA labeled as the base, the full candidate commit SHA, the verified sole parent SHA, the full candidate tree SHA obtained from the committed candidate, the commit count, the changed paths, and the final index and work tree status with untracked files included.
+Every check is reported with its exact command, outcome and runner, and a result the session quotes is marked as quoted and kept apart from one it ran.
+It pre-approves nothing new: only `omnitient start preview` is pre-approved, so `git-check` and every Git write follow the session's permissions.
+
+### 4.6 What this demonstrates, and what it does not
+
+- The commands (`tests/test_start_commit.py`) run through the real entry point against real Git repositories in temporary directories, and show the preview, the withheld cases, the drift and the recheck exactly as stated above.
+- `TestCarryThroughHookRewrite` is a fixture: the test performs, in the listed order, the Git operations the preview authorizes, and a real Git program runs a real pre-commit hook script that rewrites a staged file and rejects the commit.
+  It shows that the operation set can be carried through a rewrite, restaging and one successful commit with a parent that is the base and a clean tree, and that the preview and recheck commands answer correctly along the way.
+- The skill's text is checked statically (`TestCommitModeSkill`).
+- Not exercised in a live session, because that needs a model: that a session follows the commit-mode procedure, that it inspects a rewrite rather than restaging blindly, that it stops on an unrelated failure, that `git-check` and the Git writes prompt or are denied under a given permission configuration, and that a project's own hooks behave like the fixture.
+- Not observed: ignored files, other work trees' state, submodule contents beyond what `status` reports, and a Git configuration that rewrites a commit's content in a way a hook would not.
+  A branch switch that Git itself refuses (for example an ignored file in the way) is reported by the session, not predicted.
+
+## 5. Acceptance
 
 | Criterion | Tests (`tests/test_start.py`) |
 | --- | --- |
@@ -254,3 +361,10 @@ Tracking: the repository's `.gitignore` un-ignores `.claude/` and then ignores e
 | Anchors are decoded from the `escape_text` notation and compared as literal text, including a backslash, a tab, a carriage return and a character the reader cannot observe | `TestAnchorsAreLiteralText` |
 | The skill is project scoped, owner invoked, pre-approves only the preview, names only real flags and states its boundaries and procedure | `TestSkill` |
 | Only the shipped skill is tracked under `.claude/` | `TestIgnoreBoundary` |
+| Commit mode previews where the commit lands, from what base and what is authorized, with the revision and the Git base apart, and writes nothing | `TestStartablePreview` (`tests/test_start_commit.py`) |
+| A dirty checkout, an operation in progress, an unresolved base, a conflicting branch or an unusable checkout is withheld, without a token and without forged lines | `TestWithheld` |
+| A change of Git state, base, branch or operations after consent is `start.changed` and writes nothing; a fresh preview can start | `TestDriftAfterConsent` |
+| The handoff makes no Git write and keeps the reading plan last; the recheck passes only while the confirmed facts hold; every Git question is a read-only allowlisted verb | `TestHandoffAndRecheck` |
+| The edit mode, its token and its output are unchanged, and the two modes' tokens and options cannot be mixed | `TestEditModeIsUnchanged`, `TestPreview` |
+| The operation set can be carried through a hook rewrite, restaging and one local commit (fixture, not a live session) | `TestCarryThroughHookRewrite` |
+| The skill states the commit-mode procedure, and the contract states the same | `TestCommitModeSkill` |

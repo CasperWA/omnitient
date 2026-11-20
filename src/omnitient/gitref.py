@@ -20,9 +20,16 @@ as ``protocol.allow``, so that a missing object is never fetched, even by a Git
 too old to know ``GIT_NO_LAZY_FETCH`` and whatever the repository's own
 ``protocol.<name>.allow`` says, and the verbs are a fixed allowlist of
 ``version``, ``rev-parse``, ``symbolic-ref``, ``merge-base`` and
-``for-each-ref``. The repository's own ``.git/config`` still applies, so this is
-not a defence against a repository a hostile party prepared. Nothing here looks
-at the working tree, so whether it is clean is not observed.
+``for-each-ref``, plus ``status`` and ``check-ref-format`` for the commit mode of
+``omnitient start`` (docs/start-contract.md). ``status`` runs with optional
+locks off, so it never rewrites the index, and with hooks and the file system
+monitor switched off. The repository's own ``.git/config`` still applies, so
+this is not a defence against a repository a hostile party prepared. Review
+preparation does not look at the working tree, so whether it is clean is not
+observed there; only :func:`observe_checkout` asks.
+
+Nothing in this module writes to a repository: the session, never this program,
+creates a branch or a commit.
 """
 
 from __future__ import annotations
@@ -33,7 +40,8 @@ import stat
 import subprocess  # nosec B404 - fixed argument vectors, never a shell
 from pathlib import Path
 
-from omnitient.errors import refusal
+from omnitient import start
+from omnitient.errors import OmnitientError, refusal
 from omnitient.review import PINNED_GIT_CONFIG, PINNED_GIT_ENV, Basis, Comparison
 
 _ID = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
@@ -401,4 +409,188 @@ def resolve(repo: Path, base: str, candidate: str, basis: Basis) -> Comparison:
         git_dirs=git_dirs,
         has_replacements=bool(listed.strip()),
         protected_ids=_identities((root, *git_dirs)),
+    )
+
+
+_IN_PROGRESS = (
+    ("MERGE_HEAD", "merge"),
+    ("CHERRY_PICK_HEAD", "cherry-pick"),
+    ("REVERT_HEAD", "revert"),
+    ("rebase-merge", "rebase"),
+    ("rebase-apply", "rebase or am"),
+    ("BISECT_LOG", "bisect"),
+    ("sequencer", "sequencer"),
+)
+
+
+def _status_paths(out: bytes) -> tuple[list[str], list[str], list[str], list[str]]:
+    """Staged, unstaged, untracked and unmerged paths from ``status --porcelain -z``."""
+    staged: list[str] = []
+    unstaged: list[str] = []
+    untracked: list[str] = []
+    unmerged: list[str] = []
+    for entry in out.split(b"\0"):
+        if len(entry) < 4:
+            continue
+        x, y, path = chr(entry[0]), chr(entry[1]), os.fsdecode(entry[3:])
+        if x == "?" and y == "?":
+            untracked.append(path)
+        elif "U" in (x, y) or (x, y) in {("A", "A"), ("D", "D")}:
+            unmerged.append(path)
+        else:
+            if x not in " !":
+                staged.append(path)
+            if y not in " !":
+                unstaged.append(path)
+    return staged, unstaged, untracked, unmerged
+
+
+def _branch_problem(git: _Git, root: Path, name: str) -> tuple[str | None, str | None]:
+    """The commit an existing local branch of that name points at, and any problem."""
+    if (
+        not name
+        or name != name.strip()
+        or name.startswith(("-", "refs/"))
+        or name == "HEAD"
+        or len(name) > _MAX_REF_CHARS
+        or any(not char.isprintable() for char in name)
+    ):
+        return (
+            None,
+            "the name is empty, starts with '-' or 'refs/', is HEAD, or holds a control character",
+        )
+    full = _REF_PREFIX + name
+    code, _, _ = git.run("check-ref-format", full)
+    if code != 0:
+        return None, "Git does not accept it as a branch name"
+    code, out, err = git.run(
+        "for-each-ref",
+        "--format=%(refname)%09%(objectname)%09%(worktreepath)",
+        "refs/heads/",
+    )
+    if code != 0:
+        return (
+            None,
+            f"Git could not list the local branches ({err.strip() or 'no reason given'})",
+        )
+    found: str | None = None
+    for line in out.split("\n"):
+        ref, _, rest = line.partition("\t")
+        if not ref:
+            continue
+        if ref == full:
+            found, _, worktree = rest.partition("\t")
+            if not _ID.fullmatch(found):
+                return None, "Git did not name the commit it points at"
+            if worktree and Path(worktree) != root:
+                return found, "it is checked out in another work tree"
+        elif ref.startswith(full + "/") or full.startswith(ref + "/"):
+            return (
+                None,
+                f"it collides with the existing branch '{ref.removeprefix(_REF_PREFIX)}'",
+            )
+    code, _, _ = git.run("rev-parse", "--verify", "--quiet", f"refs/tags/{name}")
+    if code == 0:
+        return (
+            found,
+            "a tag with the same name exists, so Git would read the name ambiguously",
+        )
+    return found, None
+
+
+def observe_checkout(checkout: Path, base: str, branch: str) -> start.GitObservation:
+    """Ask read-only questions about ``checkout``, ``base`` and ``branch`` once.
+
+    ``checkout`` is a resolved directory. Every difficulty is returned in the
+    observation instead of raised, because a commit-mode preview shows it as the
+    reason the start is withheld.
+    """
+    seen = start.GitObservation(checkout=checkout, base_ref=base, branch_name=branch)
+    try:
+        return _observe(checkout, seen)
+    except OmnitientError as exc:
+        return start.GitObservation(
+            checkout=checkout,
+            base_ref=base,
+            branch_name=branch,
+            error="; ".join(d.message for d in exc.diagnostics),
+        )
+
+
+def _observe(root: Path, seen: start.GitObservation) -> start.GitObservation:
+    git = _Git(trusted_git(root), root)
+    major, minor, version = git.version()
+    if (major, minor) < MIN_GIT_VERSION:
+        raise refusal("start.git", f"this Git is too old ({version})")
+    code, out, err = git.run("rev-parse", "--is-inside-work-tree")
+    if code != 0 or out.strip() != "true":
+        raise refusal(
+            "start.git",
+            "the target is not a Git work tree that Git will open "
+            f"({err.strip() or 'no reason given'})",
+        )
+    code, out, _ = git.run("rev-parse", "--show-prefix")
+    if code != 0 or out != "\n":
+        raise refusal(
+            "start.git",
+            "the target is inside a work tree but is not its top directory",
+        )
+    git_dir = git.directory("--absolute-git-dir", root)
+    in_progress = tuple(
+        label for name, label in _IN_PROGRESS if os.path.lexists(git_dir / name)
+    )
+    code, out, _ = git.run("rev-parse", "--verify", "--quiet", "HEAD^{commit}")
+    head = out.strip() if code == 0 and _ID.fullmatch(out.strip()) else None
+    code, out, _ = git.run("rev-parse", "--verify", "--quiet", "HEAD^{tree}")
+    head_tree = out.strip() if code == 0 and _ID.fullmatch(out.strip()) else None
+    code, out, _ = git.run("symbolic-ref", "--quiet", "HEAD")
+    ref = out.removesuffix("\n")
+    current = (
+        ref.removeprefix(_REF_PREFIX)
+        if code == 0 and ref.startswith(_REF_PREFIX)
+        else None
+    )
+
+    code, raw, status_err = git.run_bytes(
+        "status", "--porcelain=v1", "-z", "--untracked-files=all", "--no-renames",
+        "--ignore-submodules=none",
+    )  # fmt: skip
+    if code != 0:
+        raise refusal(
+            "start.git",
+            f"Git could not report the status "
+            f"({_text(status_err).strip() or 'no reason given'})",
+        )
+    staged, unstaged, untracked, unmerged = _status_paths(raw)
+
+    base_id: str | None = None
+    base_tree: str | None = None
+    base_problem: str | None = None
+    try:
+        validate_ref("base", seen.base_ref)
+        base_id = git.given("base", seen.base_ref)
+        base_tree = git.commit_or_tree(base_id, "tree")
+        if base_tree is None:
+            base_problem = "the base commit has no readable tree"
+    except OmnitientError as exc:
+        base_problem = "; ".join(d.message for d in exc.diagnostics)
+    branch_id, branch_problem = _branch_problem(git, root, seen.branch_name)
+
+    return start.GitObservation(
+        checkout=root,
+        base_ref=seen.base_ref,
+        branch_name=seen.branch_name,
+        branch=current,
+        head=head,
+        head_tree=head_tree,
+        staged=tuple(staged),
+        unstaged=tuple(unstaged),
+        untracked=tuple(untracked),
+        unmerged=tuple(unmerged),
+        in_progress=in_progress,
+        base=base_id,
+        base_tree=base_tree,
+        base_problem=base_problem,
+        branch_problem=branch_problem,
+        branch_id=branch_id,
     )
