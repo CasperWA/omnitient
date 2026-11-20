@@ -98,15 +98,21 @@ def _discard(
 
     A deleted file's device and inode can be given to a new file, so where
     the creator wrote a unique ``token`` as the content, that must match too.
-    With ``dir_fd`` the name is looked up in that directory only (and ``token``
-    is not used).
+    With ``dir_fd`` the name is looked up in that directory only, and ``token``
+    is then the file's whole content: a bundle file is not unique, but a
+    recycled identity holding other bytes is still not ours. A replacement that
+    holds the same bytes under the same identity cannot be told apart.
     """
     try:
         info = os.lstat(path, dir_fd=dir_fd)
         if (info.st_dev, info.st_ino) != ident:
             return
-        if token is not None and read_regular(path, len(token)) != token:
-            return
+        if token is not None:
+            if dir_fd is None:
+                if read_regular(path, len(token)) != token:
+                    return
+            elif _read_in(dir_fd, str(path)) != token:
+                return
         os.unlink(path, dir_fd=dir_fd)
     except (OSError, NotRegularFileError):
         pass
@@ -417,35 +423,43 @@ def publish_bundle_in(
     success returns what was created, for :func:`discard_in`.
     """
     manifest_name, manifest_data = manifest
+    contents = {**files, manifest_name: manifest_data}
     created: list[tuple[str, _FileId]] = []
     try:
-        for name, data in [*files.items(), (manifest_name, manifest_data)]:
+        for name, data in contents.items():
             created.append((name, _create_exclusive(Path(name), data, mode, dir_fd)))
     except FileExistsError as exc:
-        discard_in(dir_fd, created)
+        discard_in(dir_fd, created, contents)
         raise refusal(
             "output.exists",
             f"{exc.filename} already exists, so another writer is publishing "
             "here; nothing existing was touched. Re-run the command.",
         ) from exc
     except OSError as exc:
-        discard_in(dir_fd, created)
+        discard_in(dir_fd, created, contents)
         raise refusal(
             "output.unwritable", f"cannot write the bundle: {exc.strerror}"
         ) from exc
     except BaseException:
-        discard_in(dir_fd, created)
+        discard_in(dir_fd, created, contents)
         raise
     return created
 
 
-def discard_in(dir_fd: int, created: Sequence[tuple[str, _FileId]]) -> None:
+def discard_in(
+    dir_fd: int,
+    created: Sequence[tuple[str, _FileId]],
+    contents: Mapping[str, bytes],
+) -> None:
     """Remove the files of ``created`` that are still the ones that were created.
 
-    A name that now holds anything else is left alone.
+    A file is still the one that was created while its name has the identity
+    recorded and the bytes in ``contents``, which a file system that recycles an
+    inode for a replacement does not preserve. A name that now holds anything
+    else is left alone.
     """
     for name, ident in reversed(created):
-        _discard(Path(name), ident, dir_fd=dir_fd)
+        _discard(Path(name), ident, contents[name], dir_fd=dir_fd)
 
 
 def remove_directory(parent_fd: int, name: str, ident: _FileId) -> None:

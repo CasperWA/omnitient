@@ -1524,11 +1524,23 @@ class TestDestinationIdentity:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         real = cli_module._check_read_back
+        identities: list[tuple[int, int]] = []
 
         def intruder(dir_fd: int, *args: object) -> None:
             name = out / "review-request.md"
-            name.unlink()
-            name.write_text("someone else's file", encoding="utf-8")
+            before = name.stat()
+            # The replacement is created while the original still exists, so
+            # it cannot be given the original's inode. Unlinking first lets a
+            # file system such as ext4 hand the freed inode straight to the new
+            # file, which makes it the same file by identity and is a different
+            # case (see the test that follows).
+            other = name.with_name("someone-elses-file")
+            other.write_text("someone else's file", encoding="utf-8")
+            other.replace(name)
+            after = name.stat()
+            identities.extend(
+                [(before.st_dev, before.st_ino), (after.st_dev, after.st_ino)]
+            )
             real(dir_fd, *args)  # type: ignore[arg-type]
 
         monkeypatch.setattr(cli_module, "_check_read_back", intruder)
@@ -1536,9 +1548,42 @@ class TestDestinationIdentity:
         assert code == 1
         assert "output.conflict" in err
         assert "launch instruction" not in stdout
+        assert identities[0] != identities[1], "the replacement is a different file"
         assert files_under(out) == [
             "review-request.md"
         ], "only this command's file went"
+        assert (out / "review-request.md").read_text() == "someone else's file"
+
+    def test_a_replacement_that_has_the_same_identity_is_not_removed_either(
+        self,
+        prepare: Prepare,
+        out: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # A file system may give a deleted file's inode to a new file (ext4 does
+        # at once; tmpfs does not), so device and inode alone cannot tell a
+        # replacement from the file this command wrote. Rewriting the file in
+        # place makes the identity the same on every file system.
+        real = cli_module._check_read_back
+        identities: list[tuple[int, int]] = []
+
+        def intruder(dir_fd: int, *args: object) -> None:
+            name = out / "review-request.md"
+            before = name.stat()
+            name.write_text("someone else's file", encoding="utf-8")
+            after = name.stat()
+            identities.extend(
+                [(before.st_dev, before.st_ino), (after.st_dev, after.st_ino)]
+            )
+            real(dir_fd, *args)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(cli_module, "_check_read_back", intruder)
+        code, stdout, err = prepare("regular", out=out)
+        assert code == 1
+        assert "output.conflict" in err
+        assert "launch instruction" not in stdout
+        assert identities[0] == identities[1], "the identity could not tell them apart"
+        assert files_under(out) == ["review-request.md"]
         assert (out / "review-request.md").read_text() == "someone else's file"
 
     def test_a_directory_replaced_while_it_was_written_gives_no_instruction(

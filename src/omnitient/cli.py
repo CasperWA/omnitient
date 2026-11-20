@@ -930,7 +930,7 @@ def _publish_for_review(
         except OSError as exc:
             raise _destination_changed(str(exc)) from exc
     except BaseException:
-        discard_in(dir_fd, created)
+        discard_in(dir_fd, created, {**outputs, manifest_name: manifest_data})
         remove_directory(destination.parent_fd, destination.name, made)
         raise
     finally:
