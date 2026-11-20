@@ -119,6 +119,8 @@ That is specific to this example: a handoff generated from other packages embeds
 | `src/omnitient/overview_render.py` | JSON and text serialisation of an overview, with no I/O (O2). |
 | `src/omnitient/delivery.py` | Delivery records (O3): requests, replay and conflict, status and summaries, the withdrawal reserve, with no I/O. |
 | `src/omnitient/start.py` | Wording of the start preview and the change check, with no I/O. |
+| `src/omnitient/review.py` | Wording of the review preparation: the comparison, the two tracks' instructions and the request file, with no I/O ([review-handoff-contract.md](review-handoff-contract.md)). |
+| `src/omnitient/gitref.py` | The only module that starts another program: read-only Git questions that resolve the review comparison once. |
 | `src/omnitient/cli.py` | All terminal and file I/O. |
 | `src/omnitient/data/` | Packaged JSON Schemas: v1 (`work-package.schema.json`) and v2 (`work-package.v2.schema.json`). |
 | `.claude/skills/omnitient-start/` | The project skill that wraps `omnitient start` ([start-contract.md](start-contract.md)). |

@@ -18,7 +18,7 @@ import os
 import re
 import secrets
 import stat
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -40,18 +40,24 @@ _TEMP_ATTEMPTS = 4
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
 
-def _create_exclusive(path: Path, data: bytes, mode: int | None = None) -> _FileId:
+def _create_exclusive(
+    path: Path, data: bytes, mode: int | None = None, dir_fd: int | None = None
+) -> _FileId:
     """Create ``path`` (it must not exist), write ``data`` and return its identity.
 
     Without ``mode`` the file gets 0o666 minus the umask. With ``mode`` it gets
     exactly those permission bits, set before any data is written.
+    With ``dir_fd``, ``path`` is a name in the directory that descriptor holds,
+    and it is never looked up through any other path.
     A failure after the file exists removes it again: it is ours.
     """
     fd = os.open(
         path,
-        os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC,
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC
+        | (os.O_NOFOLLOW if dir_fd is not None else 0),
         0o666 if mode is None else 0o600,
-    )
+        dir_fd=dir_fd,
+    )  # fmt: skip
     with os.fdopen(fd, "wb") as handle:
         info = os.fstat(fd)
         ident = (info.st_dev, info.st_ino)
@@ -62,7 +68,7 @@ def _create_exclusive(path: Path, data: bytes, mode: int | None = None) -> _File
             handle.flush()
             os.fsync(fd)
         except BaseException:
-            _discard(path, ident)
+            _discard(path, ident, dir_fd=dir_fd)
             raise
     return ident
 
@@ -82,19 +88,32 @@ def _kept_mode(path: Path) -> int | None:
     return stat.S_IMODE(info.st_mode) & 0o777
 
 
-def _discard(path: Path, ident: _FileId, token: bytes | None = None) -> None:
+def _discard(
+    path: Path,
+    ident: _FileId,
+    token: bytes | None = None,
+    dir_fd: int | None = None,
+) -> None:
     """Remove ``path`` only while it is still the file this operation created.
 
     A deleted file's device and inode can be given to a new file, so where
     the creator wrote a unique ``token`` as the content, that must match too.
+    With ``dir_fd`` the name is looked up in that directory only, and ``token``
+    is then the file's whole content: a bundle file is not unique, but a
+    recycled identity holding other bytes is still not ours. A replacement that
+    holds the same bytes under the same identity cannot be told apart.
     """
     try:
-        info = os.lstat(path)
+        info = os.lstat(path, dir_fd=dir_fd)
         if (info.st_dev, info.st_ino) != ident:
             return
-        if token is not None and read_regular(path, len(token)) != token:
-            return
-        path.unlink()
+        if token is not None:
+            if dir_fd is None:
+                if read_regular(path, len(token)) != token:
+                    return
+            elif _read_in(dir_fd, str(path)) != token:
+                return
+        os.unlink(path, dir_fd=dir_fd)
     except (OSError, NotRegularFileError):
         pass
 
@@ -244,6 +263,7 @@ def publish_bundle(
     manifest: tuple[str, bytes],
     *,
     overwrite: bool,
+    mode: int | None = None,
 ) -> None:
     """Publish derived files as one bundle whose completion manifest comes last.
 
@@ -259,6 +279,8 @@ def publish_bundle(
     created last. Replaced files and the new manifest keep the permission bits
     of the files they replace. A failure part-way leaves the bundle without a
     manifest, and the files already replaced stay replaced.
+    Without ``mode`` a new file gets 0o666 minus the umask; with it, exactly those
+    bits (only for a new bundle: ``overwrite`` keeps the bits of what it replaces).
     """
     manifest_name, manifest_data = manifest
     items = [*files.items(), (manifest_name, manifest_data)]
@@ -266,7 +288,7 @@ def publish_bundle(
         if overwrite:
             _publish_replacing(directory, list(files.items()), manifest)
         else:
-            _publish_new(directory, items, manifest_name)
+            _publish_new(directory, items, manifest_name, mode)
     except FileExistsError as exc:
         raise refusal(
             "output.exists",
@@ -280,7 +302,10 @@ def publish_bundle(
 
 
 def _publish_new(
-    directory: Path, items: list[tuple[str, bytes]], manifest_name: str
+    directory: Path,
+    items: list[tuple[str, bytes]],
+    manifest_name: str,
+    mode: int | None = None,
 ) -> None:
     existing = [
         name
@@ -303,7 +328,7 @@ def _publish_new(
     try:
         for name, data in items:
             path = directory / name
-            created.append((path, _create_exclusive(path, data)))
+            created.append((path, _create_exclusive(path, data, mode)))
     except BaseException:
         for path, ident in reversed(created):
             _discard(path, ident)
@@ -336,6 +361,117 @@ def _publish_replacing(
         ) from exc
 
 
+class DestinationChangedError(Exception):
+    """The directory is not the one that was selected."""
+
+
+def create_private_directory(parent_fd: int, name: str) -> tuple[int, _FileId]:
+    """Create ``name`` in the directory ``parent_fd`` holds; return it open, with its identity.
+
+    The directory has exactly the permission bits 0o700, whatever the umask, and
+    they are set on the open directory. What is
+    returned is the directory that was created: ``name`` is looked up in the
+    parent that was opened and checked to name the same directory. Raises
+    ``FileExistsError`` if ``name`` exists, :class:`DestinationChangedError` if
+    it names something else once created.
+    """
+    # The umask is the process's, and this command is single-threaded. 0o077
+    # cannot take an owner bit away, so a umask that masks the owner's own bits
+    # cannot leave a directory that this process cannot open.
+    previous = os.umask(0o077)
+    try:
+        os.mkdir(name, 0o700, dir_fd=parent_fd)
+    finally:
+        os.umask(previous)
+    try:
+        fd = os.open(
+            name,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+            dir_fd=parent_fd,
+        )
+    except OSError:
+        with contextlib.suppress(OSError):
+            os.rmdir(
+                name, dir_fd=parent_fd
+            )  # fails unless it is still an empty directory
+        raise
+    info = os.fstat(fd)
+    ident = (info.st_dev, info.st_ino)
+    try:
+        listed = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+        if (listed.st_dev, listed.st_ino) != ident:
+            raise DestinationChangedError(name)
+        os.fchmod(fd, 0o700)
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd, ident
+
+
+def publish_bundle_in(
+    dir_fd: int,
+    files: Mapping[str, bytes],
+    manifest: tuple[str, bytes],
+    *,
+    mode: int,
+) -> list[tuple[str, _FileId]]:
+    """:func:`publish_bundle` of a new bundle into the directory ``dir_fd`` holds.
+
+    Every file is created exclusively and with exactly the bits ``mode``, by
+    name in that directory only, and the manifest comes last. A failure removes
+    the files this call created, recognised by identity, and returns nothing;
+    success returns what was created, for :func:`discard_in`.
+    """
+    manifest_name, manifest_data = manifest
+    contents = {**files, manifest_name: manifest_data}
+    created: list[tuple[str, _FileId]] = []
+    try:
+        for name, data in contents.items():
+            created.append((name, _create_exclusive(Path(name), data, mode, dir_fd)))
+    except FileExistsError as exc:
+        discard_in(dir_fd, created, contents)
+        raise refusal(
+            "output.exists",
+            f"{exc.filename} already exists, so another writer is publishing "
+            "here; nothing existing was touched. Re-run the command.",
+        ) from exc
+    except OSError as exc:
+        discard_in(dir_fd, created, contents)
+        raise refusal(
+            "output.unwritable", f"cannot write the bundle: {exc.strerror}"
+        ) from exc
+    except BaseException:
+        discard_in(dir_fd, created, contents)
+        raise
+    return created
+
+
+def discard_in(
+    dir_fd: int,
+    created: Sequence[tuple[str, _FileId]],
+    contents: Mapping[str, bytes],
+) -> None:
+    """Remove the files of ``created`` that are still the ones that were created.
+
+    A file is still the one that was created while its name has the identity
+    recorded and the bytes in ``contents``, which a file system that recycles an
+    inode for a replacement does not preserve. A name that now holds anything
+    else is left alone.
+    """
+    for name, ident in reversed(created):
+        _discard(Path(name), ident, contents[name], dir_fd=dir_fd)
+
+
+def remove_directory(parent_fd: int, name: str, ident: _FileId) -> None:
+    """Remove ``name`` in the parent if it is still the directory ``ident``, and empty."""
+    try:
+        info = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+        if (info.st_dev, info.st_ino) == ident:
+            os.rmdir(name, dir_fd=parent_fd)
+    except OSError:
+        pass
+
+
 class IncompleteBundleError(Exception):
     """The bundle does not satisfy the reader rule; ``problems`` says why."""
 
@@ -356,6 +492,34 @@ class VerifiedBundle:
     files: Mapping[str, bytes]
 
 
+def _read_in(dir_fd: int, name: str) -> bytes:
+    """A regular file of the directory ``dir_fd`` holds, not through a link."""
+    fd = os.open(
+        name,
+        os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC | os.O_NOFOLLOW,
+        dir_fd=dir_fd,
+    )
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise NotRegularFileError(name)
+        handle = os.fdopen(fd, "rb")
+    except BaseException:
+        os.close(fd)
+        raise
+    with handle:
+        return handle.read(MAX_OUTPUT_BYTES + 1)
+
+
+def read_bundle_in(dir_fd: int, manifest_name: str) -> VerifiedBundle:
+    """:func:`read_bundle` for the directory a descriptor holds.
+
+    Every file is opened relative to ``dir_fd``, so what is read is in the
+    directory that was opened, whatever has happened to the path it was reached
+    by.
+    """
+    return _verify_bundle(lambda name: _read_in(dir_fd, name), manifest_name)
+
+
 def read_bundle(directory: Path, manifest_name: str) -> VerifiedBundle:
     """Apply the reader rule and return the bytes it verified.
 
@@ -373,8 +537,14 @@ def read_bundle(directory: Path, manifest_name: str) -> VerifiedBundle:
 
     Raises :class:`IncompleteBundleError` listing every problem found.
     """
+    return _verify_bundle(
+        lambda name: read_regular(directory / name, MAX_OUTPUT_BYTES), manifest_name
+    )
+
+
+def _verify_bundle(read: Callable[[str], bytes], manifest_name: str) -> VerifiedBundle:
     try:
-        raw = read_regular(directory / manifest_name, MAX_OUTPUT_BYTES)
+        raw = read(manifest_name)
     except FileNotFoundError as exc:
         raise IncompleteBundleError(
             [
@@ -425,7 +595,7 @@ def read_bundle(directory: Path, manifest_name: str) -> VerifiedBundle:
             problems.append(f"{name}: the manifest has no valid SHA-256 for it")
             continue
         try:
-            actual = read_regular(directory / name, MAX_OUTPUT_BYTES)
+            actual = read(name)
         except FileNotFoundError:
             problems.append(f"{name} is missing")
             continue
