@@ -2187,7 +2187,9 @@ class TestReaderRunsInItsOwnEnvironment:
         self, prepare: Prepare, out: Path, work_tree: Tree, tmp_path: Path
     ) -> None:
         other = make_repo(tmp_path / "other")
-        git(work_tree.path, "replace", "--force", work_tree.candidate, other.base)
+        # The replacement must exist in work_tree: ``other`` is a separate repository
+        # whose commit ids equal work_tree's only when both are built in one second.
+        git(work_tree.path, "replace", "--force", work_tree.candidate, work_tree.base)
         assert prepare("regular", out=out)[0] == 0
         document = (out / "review-request.md").read_text(encoding="utf-8")
         diff, show = (
@@ -2211,6 +2213,12 @@ class TestReaderRunsInItsOwnEnvironment:
             capture_output=True, text=True, env=env, check=False,
         )  # fmt: skip
         assert "b.txt" not in plain.stdout, "the same environment redirects a plain Git"
+        # Control: ``other``'s own ids are found there, so GIT_DIR did redirect Git.
+        control = subprocess.run(
+            ["git", "diff", other.base, other.candidate], cwd=tmp_path,
+            capture_output=True, text=True, env=env, check=False,
+        )  # fmt: skip
+        assert "stopping at b.txt" in control.stderr, control.stderr
 
     def test_the_commands_name_the_program_that_resolved_the_ids(
         self, prepare: Prepare, out: Path
