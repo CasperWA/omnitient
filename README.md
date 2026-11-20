@@ -137,6 +137,8 @@ After you agree, `omnitient start handoff` checks that what you were shown is un
 The session then reads the handoff page by page against a printed plan and stops if it cannot establish that it read it all.
 It refuses if anything changed, and a blocked package gets a refusal and no handoff.
 A target that is not the working directory can be previewed but gets no token.
+With `--mode commit --base REF --branch NAME` the preview also observes the checkout's Git state and shows where one local commit would land, from which base commit and what you authorize; a dirty checkout, an unresolved base or a conflicting branch gets no token, and a change after your go-ahead needs a fresh preview.
+Omnitient only observes: the session creates the branch and the commit.
 See [docs/start-contract.md](docs/start-contract.md).
 
 ```bash

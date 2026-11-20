@@ -2075,12 +2075,25 @@ class TestSkill:
             for a in top.choices["start"]._actions
             if hasattr(a, "choices") and a.choices
         )
-        known = set(steps.choices["preview"]._option_string_actions) | set(
-            steps.choices["handoff"]._option_string_actions
+        known = (
+            set(steps.choices["preview"]._option_string_actions)
+            | set(steps.choices["handoff"]._option_string_actions)
+            | set(steps.choices["git-check"]._option_string_actions)
         )
         named = set(re.findall(r"(?<![\w-])--[a-z][a-z0-9-]*", self.text))
-        assert named - known == {"--allow-blocked"}
+        # Flags the skill forbids, or that belong to the Git program it names in
+        # commit mode (docs/start-contract.md section 4), never to omnitient.
+        not_omnitient = {
+            "--allow-blocked",
+            "--no-verify",
+            "--untracked-files",
+            "--porcelain",
+            "--count",
+            "--name-status",
+        }
+        assert named - known == not_omnitient
         assert {"--expect-preview", "--out", "--checkout", "--root"} <= named
+        assert {"--mode", "--base", "--branch"} <= named
 
     def test_it_states_the_boundaries_the_brief_requires(self) -> None:
         _, body = frontmatter(self.text)
