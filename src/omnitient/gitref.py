@@ -10,19 +10,23 @@ read-only questions about one explicitly named local repository and returns
 full object ids; it never fetches, never writes to the repository and never
 runs a hook, a pager or a configured helper that these questions could reach.
 
-The hardening is deliberate and limited. Global and system configuration are
-switched off, replacement refs cannot change what an id means, optional locks and
-lazy fetching are off, and the verbs are a fixed allowlist of ``rev-parse``,
-``symbolic-ref`` and ``merge-base``. The repository's own ``.git/config`` still
-applies, so this is not a defence against a repository a hostile party prepared.
-Nothing here looks at the working tree, so whether it is clean is not observed.
+The hardening is deliberate and limited. The Git program is looked up only in
+absolute ``PATH`` entries outside the repository that others cannot write to.
+Global and system configuration are switched off, replacement refs cannot change
+what an id means, optional locks and lazy fetching are off, every transport is
+refused so that a missing object is never fetched even by a Git too old to know
+``GIT_NO_LAZY_FETCH``, and the verbs are a fixed allowlist of ``version``,
+``rev-parse``, ``symbolic-ref``, ``merge-base`` and ``for-each-ref``. The
+repository's own ``.git/config`` still applies, so this is not a defence against
+a repository a hostile party prepared. Nothing here looks at the working tree,
+so whether it is clean is not observed.
 """
 
 from __future__ import annotations
 
 import os
 import re
-import shutil
+import stat
 import subprocess  # nosec B404 - fixed argument vectors, never a shell
 from pathlib import Path
 
@@ -33,6 +37,16 @@ _ID = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
 _TIMEOUT_SECONDS = 30
 _MAX_REF_CHARS = 256
 _REF_PREFIX = "refs/heads/"
+
+# GIT_CONFIG_GLOBAL, which switches the user's configuration off, is Git 2.32.
+# An older Git would silently apply it, so it is refused rather than used.
+MIN_GIT_VERSION = (2, 32)
+_VERSION = re.compile(r"git version (\d+)\.(\d+)(?:\.(\d+))?")
+_AMBIGUOUS = re.compile(
+    r"^(?:warning: refname '.*' is ambiguous\.|"
+    r"error: short object ID \S+ is ambiguous)$",
+    re.MULTILINE,
+)
 
 
 def validate_ref(label: str, ref: str) -> str:
@@ -59,10 +73,67 @@ def validate_ref(label: str, ref: str) -> str:
     return ref
 
 
-def _environment() -> dict[str, str]:
-    env = {"LC_ALL": "C"}
-    if "PATH" in os.environ:
-        env["PATH"] = os.environ["PATH"]
+def _inside(path: Path, top: Path) -> bool:
+    return path == top or top in path.parents
+
+
+def _trusted_location(path: Path) -> bool:
+    """Whether only the owner or root can change ``path`` (a file or a directory)."""
+    try:
+        info = path.stat()
+    except OSError:
+        return False
+    if info.st_mode & stat.S_IWOTH:
+        return False
+    getuid = getattr(os, "getuid", None)
+    return getuid is None or info.st_uid in (0, getuid())
+
+
+def trusted_git(repo: Path) -> Path:
+    """The Git program to run: the first acceptable ``git`` on the caller's ``PATH``.
+
+    A ``PATH`` entry that is empty or relative (it would mean the current
+    directory), that lies inside the repository, or whose directory or program
+    others can write to, is skipped, so a program planted in the work tree or
+    in a shared directory is never started. The program is used by its real
+    path. Nothing is looked up anywhere else.
+    """
+    skipped: list[str] = []
+    for entry in os.environ.get("PATH", "").split(os.pathsep):
+        if not entry or not Path(entry).is_absolute():
+            continue
+        try:
+            real = (Path(entry) / "git").resolve(strict=True)
+            folder = Path(entry).resolve(strict=True)
+        except (OSError, RuntimeError):
+            continue
+        if not real.is_file() or not os.access(real, os.X_OK):
+            continue
+        if _inside(real, repo) or _inside(folder, repo):
+            skipped.append("inside the repository")
+        elif not (_trusted_location(real) and _trusted_location(real.parent)):
+            skipped.append("writable by others")
+        else:
+            return real
+    if skipped:
+        raise refusal(
+            "review.git_untrusted",
+            "every git program on PATH is "
+            + " or ".join(sorted(set(skipped)))
+            + "; put a git that only you and root can change in an absolute PATH "
+            "directory outside the repository",
+        )
+    raise refusal(
+        "review.git_missing",
+        "no git program was found in an absolute PATH directory (empty and "
+        "relative entries are not searched)",
+    )
+
+
+def _environment(executable: Path) -> dict[str, str]:
+    # Only the Git program's own directory: Git finds its helpers there and a
+    # PATH entry of the caller cannot add one.
+    env = {"LC_ALL": "C", "PATH": str(executable.parent)}
     env.update(
         GIT_CONFIG_GLOBAL=os.devnull,
         GIT_CONFIG_NOSYSTEM="1",
@@ -76,19 +147,23 @@ def _environment() -> dict[str, str]:
 
 
 class _Git:
-    def __init__(self, executable: str, repo: Path) -> None:
+    def __init__(self, executable: Path, repo: Path) -> None:
         self._base = [
-            executable,
+            str(executable),
             "--no-optional-locks",
             "--no-replace-objects",
             "-c",
             "core.fsmonitor=false",
             "-c",
             f"core.hooksPath={os.devnull}",
+            "-c",
+            "protocol.allow=never",
+            "-c",
+            "core.warnAmbiguousRefs=true",
             "-C",
             str(repo),
         ]
-        self._env = _environment()
+        self._env = _environment(executable)
 
     def run(self, *args: str) -> tuple[int, str, str]:
         try:
@@ -114,11 +189,64 @@ class _Git:
 
     def commit_or_tree(self, spec: str, kind: str) -> str | None:
         """The full id ``spec`` names as a ``kind`` ("commit" or "tree"), if any."""
-        code, out, _ = self.run(
-            "rev-parse", "--verify", "--quiet", "--end-of-options", f"{spec}^{{{kind}}}"
+        return self.verify(spec, kind)[0]
+
+    def verify(self, spec: str, kind: str) -> tuple[str | None, bool]:
+        """The id ``spec`` names as a ``kind``, and whether Git found it ambiguous.
+
+        Git warns about a name that is both a branch and a tag, or a ref and an
+        abbreviated object id, and resolves it silently under ``--quiet``, so
+        the warning is read instead.
+        """
+        code, out, err = self.run(
+            "rev-parse", "--verify", "--end-of-options", f"{spec}^{{{kind}}}"
         )
         answer = out.strip()
-        return answer if code == 0 and _ID.fullmatch(answer) else None
+        found = answer if code == 0 and _ID.fullmatch(answer) else None
+        return found, _AMBIGUOUS.search(err) is not None
+
+    def given(self, label: str, spec: str) -> str:
+        """The commit a ref the operator named stands for, or a refusal."""
+        found, ambiguous = self.verify(spec, "commit")
+        if ambiguous:
+            raise refusal(
+                "review.ref_ambiguous",
+                f"the {label} names more than one thing in this repository (for "
+                "example a branch and a tag, or a ref and an abbreviated commit "
+                "id), and Git would pick one silently; name it in full, such as "
+                "refs/heads/NAME or refs/tags/NAME, or give the full commit id",
+            )
+        if found is None:
+            raise refusal(
+                "review.ref_unresolved",
+                f"the {label} does not name a commit in this repository (nothing is "
+                "fetched, so a remote branch must exist as a local ref, and a "
+                "commit that is missing locally, for example in a partial or "
+                "shallow clone, must be fetched by you first)",
+            )
+        return found
+
+    def version(self) -> tuple[int, int, str]:
+        code, out, _ = self.run("version")
+        match = _VERSION.match(out.strip())
+        if code != 0 or match is None:
+            raise refusal("review.git_failed", "Git did not report its version")
+        return int(match[1]), int(match[2]), out.strip()
+
+    def directory(self, flag: str, root: Path) -> Path:
+        code, out, err = self.run("rev-parse", flag)
+        text = out.strip()
+        if code != 0 or not text:
+            raise refusal(
+                "review.git_failed",
+                f"Git did not name its directory ({err.strip() or 'no reason given'})",
+            )
+        try:
+            return (root / text).resolve(strict=True)
+        except (OSError, RuntimeError) as exc:
+            raise refusal(
+                "review.git_failed", f"cannot resolve the Git directory: {exc}"
+            ) from exc
 
 
 def resolve(repo: Path, base: str, candidate: str, basis: Basis) -> Comparison:
@@ -128,9 +256,6 @@ def resolve(repo: Path, base: str, candidate: str, basis: Basis) -> Comparison:
     exists only on a remote must already be a local ref. Each ref is resolved
     exactly once here; every later use is of the ids this returns.
     """
-    executable = shutil.which("git")
-    if executable is None:
-        raise refusal("review.git_missing", "the git program was not found on PATH")
     try:
         root = repo.resolve(strict=True)
     except (OSError, RuntimeError) as exc:
@@ -139,7 +264,16 @@ def resolve(repo: Path, base: str, candidate: str, basis: Basis) -> Comparison:
         ) from exc
     if not root.is_dir():
         raise refusal("review.repo", "the repository path is not a directory")
+    executable = trusted_git(root)
     git = _Git(executable, root)
+    major, minor, version = git.version()
+    if (major, minor) < MIN_GIT_VERSION:
+        raise refusal(
+            "review.git_version",
+            f"this Git is too old ({version}); version "
+            f"{MIN_GIT_VERSION[0]}.{MIN_GIT_VERSION[1]} or later is needed, "
+            "because an older one cannot be told to ignore the user's configuration",
+        )
 
     code, out, err = git.run("rev-parse", "--is-inside-work-tree")
     if code != 0:
@@ -158,20 +292,30 @@ def resolve(repo: Path, base: str, candidate: str, basis: Basis) -> Comparison:
             "top directory of the repository",
         )
 
-    base_id = git.commit_or_tree(base, "commit")
-    if base_id is None:
+    git_dir = git.directory("--absolute-git-dir", root)
+    common_dir = git.directory("--git-common-dir", root)
+    git_dirs = tuple(dict.fromkeys((git_dir, common_dir)))
+    # Git still reads this deprecated file under --no-replace-objects, and it
+    # can rewrite parents, so it could move a merge base.
+    if any(os.path.lexists(d / "info" / "grafts") for d in git_dirs):
         raise refusal(
-            "review.ref_unresolved",
-            "the base does not name a commit in this repository (nothing is "
-            "fetched; a remote branch must exist as a local ref)",
+            "review.history_rewritten",
+            "the repository has a graft file (info/grafts), which rewrites "
+            "history in a way that cannot be switched off, so the comparison "
+            "could differ from the commits' own; convert or remove it first "
+            "(git replace --convert-graft-file)",
         )
-    candidate_id = git.commit_or_tree(candidate, "commit")
-    if candidate_id is None:
+    code, listed, err = git.run(
+        "for-each-ref", "--count=1", "--format=%(refname)", "refs/replace/"
+    )
+    if code != 0:
         raise refusal(
-            "review.ref_unresolved",
-            "the candidate does not name a commit in this repository (nothing is "
-            "fetched; a remote branch must exist as a local ref)",
+            "review.git_failed",
+            f"Git could not list replacement refs ({err.strip() or 'no reason given'})",
         )
+
+    base_id = git.given("base", base)
+    candidate_id = git.given("candidate", candidate)
     candidate_tree = git.commit_or_tree(candidate_id, "tree")
     if candidate_tree is None:
         raise refusal(
@@ -228,4 +372,8 @@ def resolve(repo: Path, base: str, candidate: str, basis: Basis) -> Comparison:
         basis_tree=basis_tree,
         head=head,
         branch=branch,
+        git_executable=executable,
+        git_version=version,
+        git_dirs=git_dirs,
+        has_replacements=bool(listed.strip()),
     )

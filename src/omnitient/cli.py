@@ -343,6 +343,7 @@ def _publish_handoff(
     *,
     force: bool,
     extra: Mapping[str, object] | None = None,
+    mode: int | None = None,
 ) -> list[Path]:
     """Publish a handoff bundle, read it back and return the paths written.
 
@@ -376,7 +377,13 @@ def _publish_handoff(
             f"cannot create {directory}: {exc.strerror}",
         ) from exc
     manifest_data = (_json(meta) + "\n").encode("utf-8")
-    publish_bundle(directory, outputs, (manifest_name, manifest_data), overwrite=force)
+    publish_bundle(
+        directory,
+        outputs,
+        (manifest_name, manifest_data),
+        overwrite=force,
+        mode=mode,
+    )
     shown = directory
     try:
         bundle = read_bundle(directory, manifest_name)
@@ -711,21 +718,39 @@ def _changed(names: list[str]) -> OmnitientError:
     )
 
 
-def _review_destination(arg: Path, repo: Path) -> Path:
-    """The new directory for the regular track's file, resolved and checked."""
+_FileId = tuple[int, int]
+
+
+def _file_id(path: Path) -> _FileId:
+    info = path.stat()
+    return info.st_dev, info.st_ino
+
+
+def _review_destination(
+    arg: Path, comparison: review.Comparison
+) -> tuple[Path, _FileId]:
+    """The new directory for the regular track's file, resolved and checked.
+
+    Also the identity of its parent, so that a parent that is replaced before
+    the directory is created (for example by a link into the repository) is
+    noticed.
+    """
     try:
         path = arg.resolve()
         exists = os.path.lexists(path)
         parent_ok = path.parent.is_dir()
+        parent_id = _file_id(path.parent) if parent_ok else (0, 0)
     except (OSError, RuntimeError) as exc:
         raise refusal(
             "review.out", f"cannot resolve the output directory: {exc}"
         ) from exc
-    if path == repo or path.is_relative_to(repo):
+    if _in_repository(path, comparison):
         raise refusal(
             "review.out_inside_repo",
-            "the output directory is inside the repository, where it would "
-            "change the work tree; name a directory outside it with --out",
+            "the output directory is inside the repository or its Git directory "
+            "(which can lie outside the work tree, for a linked work tree or a "
+            "separate Git directory), where it would change the repository; name "
+            "a directory outside them with --out",
         )
     if exists:
         raise refusal(
@@ -747,19 +772,41 @@ def _review_destination(arg: Path, repo: Path) -> Path:
             "use a directory whose absolute path has only letters, digits and "
             "._+=@:,/- after the leading slash",
         )
-    return path
+    return path, parent_id
+
+
+def _in_repository(path: Path, comparison: review.Comparison) -> bool:
+    return any(
+        path == top or path.is_relative_to(top)
+        for top in (comparison.repo, *comparison.git_dirs)
+    )
+
+
+def _destination_changed(detail: str) -> OmnitientError:
+    return refusal(
+        "review.out_changed",
+        f"the output directory changed while it was being prepared ({detail}), so "
+        "no instruction names it. Nothing was reused; check the directory you "
+        "named, then prepare again with a new directory",
+    )
 
 
 def _publish_for_review(
     out: Path,
+    parent_id: _FileId,
+    comparison: review.Comparison,
     outputs: dict[str, bytes],
     handoff: render.Handoff,
     assessed: Assessment,
     extra: Mapping[str, object],
 ) -> list[Path]:
-    """Create ``out`` (it must be new) and publish into it; leave nothing half-claimed."""
+    """Create ``out`` (it must be new) and publish into it; leave nothing half-claimed.
+
+    The directory is private to its owner (0700) and so are its files (0600): it
+    holds package content and a host path, and its parent may be shared.
+    """
     try:
-        out.mkdir()
+        out.mkdir(mode=0o700)
     except FileExistsError as exc:
         raise refusal(
             "review.out_exists",
@@ -772,7 +819,24 @@ def _publish_for_review(
             f"cannot create the output directory: {exc.strerror}",
         ) from exc
     try:
-        return _publish_handoff(
+        made = _file_id(out)
+        where = out.resolve(strict=True)
+        moved = (
+            where != out
+            or _file_id(out.parent) != parent_id
+            or _in_repository(where, comparison)
+        )
+    except OSError as exc:
+        moved = True
+        made = (0, 0)
+        where = out
+        del exc
+    if moved:
+        with contextlib.suppress(OSError):
+            out.rmdir()  # the empty directory this command just made
+        raise _destination_changed("its parent is no longer the one that was checked")
+    try:
+        written = _publish_handoff(
             out,
             review.REVIEW_STAGE,
             outputs,
@@ -780,11 +844,19 @@ def _publish_for_review(
             assessed,
             force=False,
             extra=extra,
+            mode=0o600,
         )
     except OmnitientError:
         with contextlib.suppress(OSError):
             out.rmdir()  # only if empty: nothing that was written is removed
         raise
+    try:
+        unchanged = out.resolve(strict=True) == where and _file_id(out) == made
+    except OSError:
+        unchanged = False
+    if not unchanged:
+        raise _destination_changed("it is no longer the directory that was written")
+    return written
 
 
 def cmd_review_prepare(args: argparse.Namespace) -> int:
@@ -830,17 +902,24 @@ def cmd_review_prepare(args: argparse.Namespace) -> int:
     handoff = render.build_handoff(view, assessed.resolved, review.REVIEW_STAGE)
 
     if track == "codex":
+        reasons = []
         mismatch = review.checkout_mismatch(comparison)
         if mismatch:
-            show(
-                [
-                    (
-                        f"{mismatch}. The review skill reviews the checked-out "
-                        "commit and refuses any other; check out the candidate "
-                        "commit in a clean work tree and prepare again"
-                    )
-                ]
+            reasons.append(
+                f"{mismatch}. The review skill reviews the checked-out "
+                "commit and refuses any other; check out the candidate "
+                "commit in a clean work tree and prepare again"
             )
+        if comparison.has_replacements:
+            reasons.append(
+                "the repository has replacement refs (refs/replace/), which the "
+                "review skill's controller would apply when it reads the change, "
+                "so it could review something other than the pinned commits, and "
+                "the skill cannot be told to ignore them; remove them, or use the "
+                "regular track, which reads the change with them disabled"
+            )
+        if reasons:
+            show(reasons)
             return EXIT_NOT_READY
         instruction = review.codex_instruction(pkg, digest, comparison)
         show([])
@@ -848,7 +927,7 @@ def cmd_review_prepare(args: argparse.Namespace) -> int:
         _out(instruction)
         return EXIT_OK
 
-    directory = _review_destination(args.out, comparison.repo)
+    directory, parent_id = _review_destination(args.out, comparison)
     markdown = render.render_format(handoff, "md").decode("utf-8")
     document = review.regular_document(markdown, view, digest, comparison).encode(
         "utf-8"
@@ -870,14 +949,22 @@ def cmd_review_prepare(args: argparse.Namespace) -> int:
             "basis": comparison.basis,
             "basis_commit": comparison.basis_commit,
             "basis_tree": comparison.basis_tree,
+            "git_executable": str(comparison.git_executable),
+            "git_version": comparison.git_version,
         }
     }
     written = _publish_for_review(
-        directory, {review.REQUEST_FILE: document}, handoff, assessed, extra
+        directory,
+        parent_id,
+        comparison,
+        {review.REQUEST_FILE: document},
+        handoff,
+        assessed,
+        extra,
     )
     show([], written[0])
     _out("launch instruction (for a fresh read-only review session):")
-    _out(review.regular_instruction(written[0]))
+    _out(review.regular_instruction(written[0], comparison))
     return EXIT_OK
 
 

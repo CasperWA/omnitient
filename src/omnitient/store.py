@@ -244,6 +244,7 @@ def publish_bundle(
     manifest: tuple[str, bytes],
     *,
     overwrite: bool,
+    mode: int | None = None,
 ) -> None:
     """Publish derived files as one bundle whose completion manifest comes last.
 
@@ -259,6 +260,8 @@ def publish_bundle(
     created last. Replaced files and the new manifest keep the permission bits
     of the files they replace. A failure part-way leaves the bundle without a
     manifest, and the files already replaced stay replaced.
+    Without ``mode`` a new file gets 0o666 minus the umask; with it, exactly those
+    bits (only for a new bundle: ``overwrite`` keeps the bits of what it replaces).
     """
     manifest_name, manifest_data = manifest
     items = [*files.items(), (manifest_name, manifest_data)]
@@ -266,7 +269,7 @@ def publish_bundle(
         if overwrite:
             _publish_replacing(directory, list(files.items()), manifest)
         else:
-            _publish_new(directory, items, manifest_name)
+            _publish_new(directory, items, manifest_name, mode)
     except FileExistsError as exc:
         raise refusal(
             "output.exists",
@@ -280,7 +283,10 @@ def publish_bundle(
 
 
 def _publish_new(
-    directory: Path, items: list[tuple[str, bytes]], manifest_name: str
+    directory: Path,
+    items: list[tuple[str, bytes]],
+    manifest_name: str,
+    mode: int | None = None,
 ) -> None:
     existing = [
         name
@@ -303,7 +309,7 @@ def _publish_new(
     try:
         for name, data in items:
             path = directory / name
-            created.append((path, _create_exclusive(path, data)))
+            created.append((path, _create_exclusive(path, data, mode)))
     except BaseException:
         for path, ident in reversed(created):
             _discard(path, ident)
