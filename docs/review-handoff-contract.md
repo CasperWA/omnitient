@@ -104,6 +104,8 @@ Ordinary `render` keeps its own modes.
 The destination is bound by identity, not by a path.
 The parent is opened once, and the identity of it and of every directory above it is compared with the repository's top directory and Git directories (so a parent that is in the repository by a link, a bind or a swap is refused, not only one whose path says so).
 The directory is created in that open parent, opened without following links and checked to be what `mkdir` made, and every file is created, read back and removed relative to it.
+Required access: the identity checks open the existing parent and walk up through every directory above it, so the parent and each of its ancestors need read and search (execute) permission for the user running the command, and the parent also needs write permission, because the new directory is created in it.
+The command does not change permissions or fall back to another location; where the access is missing, the owner arranges it or chooses another parent.
 So a path that is replaced meanwhile (a parent swapped for a link into the repository, the new directory renamed away) cannot redirect a write: the bundle goes into the directory that was selected, and the final check that the path still names it fails with `review.out_changed`, which names no instruction.
 Cleanup is bound the same way: only a file that is still the one this command created (device and inode) is removed from that directory, and the directory is removed only if it is still the one created and is empty; anything else, such as a file another writer put in its place, is left alone.
 Residual: a writer with the command's own rights who replaces a name between the check and the removal is not prevented.

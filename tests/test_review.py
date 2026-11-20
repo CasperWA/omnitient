@@ -1179,8 +1179,38 @@ class TestReaderKeepsTheSelectedComparison:
             stdout
         )
         assert "regular track" in stdout
+        observed = next(
+            x for x in stdout.splitlines() if x.startswith("observed at preparation: ")
+        )
+        assert "a replacement ref exists under refs/replace/" in observed
+        assert "no replacement ref" not in observed
         git(work_tree.path, "replace", "-d", work_tree.candidate)
-        assert prepare("codex")[0] == 0
+        code, stdout, _ = prepare("codex")
+        assert code == 0
+        observed = next(
+            x for x in stdout.splitlines() if x.startswith("observed at preparation: ")
+        )
+        assert "no replacement ref under refs/replace/" in observed
+
+    def test_a_blocked_package_reports_replacements_accurately_on_codex(
+        self,
+        run: Run,
+        write_package: Write,
+        v2_package: WorkPackage,
+        repo: Path,
+        work_tree: Tree,
+    ) -> None:
+        git(work_tree.path, "replace", "--force", work_tree.candidate, work_tree.base)
+        prepare = Prepare(run, write_package(v2_package, "blocked"), repo, work_tree)
+        code, stdout, _ = prepare("codex")
+        assert code == 3
+        assert SKILL not in stdout
+        assert "status: BLOCKED" in stdout
+        observed = next(
+            x for x in stdout.splitlines() if x.startswith("observed at preparation: ")
+        )
+        assert "a replacement ref exists under refs/replace/" in observed
+        assert "no replacement ref" not in observed
 
     def test_a_graft_file_is_refused_on_both_tracks(
         self, prepare: Prepare, work_tree: Tree, out: Path

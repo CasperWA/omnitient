@@ -265,9 +265,14 @@ def codex_boundary_lines(comparison: Comparison) -> list[str]:
     runs later and is not run here. The third is the part of the comparison that
     nothing guards once the instruction has been printed.
     """
+    replacements = (
+        "a replacement ref exists under refs/replace/"
+        if comparison.has_replacements
+        else "no replacement ref under refs/replace/"
+    )
     seen = (
         f"observed at preparation: {checkout_state(comparison)}; "
-        "no replacement ref under refs/replace/; no graft file"
+        f"{replacements}; no graft file"
     )
     later = (
         "checked by the review controller when the review runs, not here: the "
